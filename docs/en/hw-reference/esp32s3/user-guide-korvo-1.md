@@ -209,7 +209,7 @@ This section provides instructions on how to do hardware/software setup and flas
 
 -   1 x ESP32-S3-Korvo-1
 -   2 x USB 2.0 cables (Standard-A to Micro-B), one for USB power supply, the other for flashing firmware on to the board
--   4-ohm, 3-watt speaker or headphones with a 3.5 mm jack. If you use a speaker, it is recommended to choose one no more than 3 watts and fitted with JST PH 2.0 2-Pin plugs are needed. In case you do not have this type of plug it is also fine to use Dupont female jumper wires during development.
+-   4-ohm, 3-watt speaker or headphones with a 3.5 mm jack. If you use a speaker, it is recommended to choose one rated at 3 watts or less and fitted with JST PH 2.0 2-Pin plugs. In case you do not have this type of plug, it is also fine to use Dupont female jumper wires during development.
 -   Computer running Windows, Linux, or macOS
 
 ## 2.2 Optional Hardware
@@ -319,7 +319,7 @@ Compared to ESP32-S3-Korvo-1 v4.0, ESP32-S3-Korvo-1 v5.0 has two changes in hard
 
 | ESP32-S3-Korvo-1 V5.0 Marking      | ESP32-S3-Korvo V4.0 Marking |
 |--------------------|----|
-|  ![ESP32-S3-Korvo-1 V5.0 Marking](../../../_static/esp32-s3-korvo-1-v5-marking.png) |![ESP32-S3-Korvo V4.0 Marking](../../../_static/esp32-s3-korvo-1-v4-marking.png) |
+|  ![ESP32-S3-Korvo-1 V5.0 Marking](../../../_static/esp32-s3-korvo-1-v5-marking.png) |![ESP32-S3-Korvo-1 V4.0 Marking](../../../_static/esp32-s3-korvo-1-v4-marking.png) |
 
 2.  The J1 component on the ESP32-S3-Korvo-1 v5.0 main board is moved a little to the right. This does not affect the performance of the board.
 
@@ -347,7 +347,7 @@ Compared to ESP32-S3-Korvo-1 v4.0, ESP32-S3-Korvo-1 v5.0 has two changes in hard
 
 -   [ESP32-S3-Korvo-1 v5.0 Main Board PCB Layout](https://dl.espressif.com/dl/schematics/PCB_ESP32-S3-Korvo-1_V5_20211201.pdf) (PDF)
 -   [ESP32-S3-Korvo-1 v4.0 Main Board PCB Layout](https://dl.espressif.com/dl/schematics/PCB_ESP32-S3-KORVO_V4_20210719AE.pdf) (PDF)
--   [ESP32-Korvo-Mic PCB layout](https://dl.espressif.com/dl/schematics/PCB_ESP32-Korvo-Mic_V1_1_20200316AA.pdf) (PDF)
+-   [ESP32-Korvo-Mic Sub Board PCB Layout](https://dl.espressif.com/dl/schematics/PCB_ESP32-Korvo-Mic_V1_1_20200316AA.pdf) (PDF)
 
 ## 5.4 Dimensions
 
