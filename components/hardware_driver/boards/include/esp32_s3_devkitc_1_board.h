@@ -20,30 +20,30 @@
 #include "esp_idf_version.h"
 
 /**
- * @brief ESP32-S3-DevKitC-1 + INMP441 board configuration
+ * @brief ESP32-S3-DevKitC-1 + INMP441 板级配置
  *
- * INMP441 wiring (directly to ESP32-S3 GPIOs):
- *   INMP441 SCK  -> GPIO_I2S_SCLK (default: GPIO 4)
- *   INMP441 WS   -> GPIO_I2S_LRCK (default: GPIO 5)
- *   INMP441 SD   -> GPIO_I2S_SDIN (default: GPIO 6)
- *   INMP441 L/R  -> GND (left channel) or VDD (right channel)
+ * INMP441 接线（直连 ESP32-S3 GPIO）：
+ *   INMP441 SCK  -> GPIO_I2S_SCLK (默认: GPIO 4)
+ *   INMP441 WS   -> GPIO_I2S_LRCK (默认: GPIO 5)
+ *   INMP441 SD   -> GPIO_I2S_SDIN (默认: GPIO 6)
+ *   INMP441 L/R  -> GND (左声道) 或 VDD (右声道)
  *   INMP441 VDD  -> 3.3V
  *   INMP441 GND  -> GND
  *
- * Note: On ESP32-S3 N16R8 (Octal SPI), GPIOs 26-37 are reserved
- *       for flash/PSRAM and must NOT be used.
+ * 注意: ESP32-S3 N16R8 (Octal SPI) 的 GPIO 26-37 已被
+ *       Flash/PSRAM 占用，不可作为 I2S 引脚使用。
  */
 
-/**
- * @brief I2C GPIO (not used — no external codec)
- */
+/* ═══════════════════════════════════════════════════════════
+ *  I2C 配置（本板无外部编解码器，不使用）
+ * ═══════════════════════════════════════════════════════════ */
 #define FUNC_I2C_EN     (0)
 #define GPIO_I2C_SCL    (GPIO_NUM_NC)
 #define GPIO_I2C_SDA    (GPIO_NUM_NC)
 
-/**
- * @brief SDMMC GPIO (disabled by default)
- */
+/* ═══════════════════════════════════════════════════════════
+ *  SDMMC / SDSPI（默认关闭）
+ * ═══════════════════════════════════════════════════════════ */
 #define FUNC_SDMMC_EN   (0)
 #define SDMMC_BUS_WIDTH (1)
 #define GPIO_SDMMC_CLK  (GPIO_NUM_NC)
@@ -54,9 +54,6 @@
 #define GPIO_SDMMC_D3   (GPIO_NUM_NC)
 #define GPIO_SDMMC_DET  (GPIO_NUM_NC)
 
-/**
- * @brief SDSPI GPIO (disabled by default)
- */
 #define FUNC_SDSPI_EN       (0)
 #define SDSPI_HOST          (SPI2_HOST)
 #define GPIO_SDSPI_CS       (GPIO_NUM_NC)
@@ -64,21 +61,20 @@
 #define GPIO_SDSPI_MISO     (GPIO_NUM_NC)
 #define GPIO_SDSPI_MOSI     (GPIO_NUM_NC)
 
-/**
- * @brief I2S GPIO for INMP441 microphone
- *
- * Change these pins to match your actual wiring.
- */
+/* ═══════════════════════════════════════════════════════════
+ *  I2S GPIO — INMP441 麦克风引脚定义
+ *  根据实际接线修改以下值
+ * ═══════════════════════════════════════════════════════════ */
 #define FUNC_I2S_EN         (1)
-#define GPIO_I2S_LRCK       (GPIO_NUM_5)
-#define GPIO_I2S_MCLK       (GPIO_NUM_NC)
-#define GPIO_I2S_SCLK       (GPIO_NUM_4)
-#define GPIO_I2S_SDIN       (GPIO_NUM_6)
-#define GPIO_I2S_DOUT       (GPIO_NUM_NC)
+#define GPIO_I2S_LRCK       (GPIO_NUM_5)   /* WS (字选择/帧同步) */
+#define GPIO_I2S_MCLK       (GPIO_NUM_NC)  /* INMP441 不需要 MCLK */
+#define GPIO_I2S_SCLK       (GPIO_NUM_4)   /* SCK (位时钟) */
+#define GPIO_I2S_SDIN       (GPIO_NUM_6)   /* SD (串行数据输入) */
+#define GPIO_I2S_DOUT       (GPIO_NUM_NC)  /* 无播放输出 */
 
-/**
- * @brief Secondary I2S (not used)
- */
+/* ═══════════════════════════════════════════════════════════
+ *  第二路 I2S（不使用）
+ * ═══════════════════════════════════════════════════════════ */
 #define FUNC_I2S0_EN         (0)
 #define GPIO_I2S0_LRCK       (GPIO_NUM_NC)
 #define GPIO_I2S0_MCLK       (GPIO_NUM_NC)
@@ -86,32 +82,52 @@
 #define GPIO_I2S0_SDIN       (GPIO_NUM_NC)
 #define GPIO_I2S0_DOUT       (GPIO_NUM_NC)
 
-/**
- * @brief Power control (not used)
- */
+/* ═══════════════════════════════════════════════════════════
+ *  电源控制（不使用）
+ * ═══════════════════════════════════════════════════════════ */
 #define FUNC_PWR_CTRL       (0)
 #define GPIO_PWR_CTRL       (GPIO_NUM_NC)
 #define GPIO_PWR_ON_LEVEL   (1)
 
+/* ═══════════════════════════════════════════════════════════
+ *  INMP441 音频参数
+ * ═══════════════════════════════════════════════════════════ */
+
 /**
- * @brief INMP441 I2S slot selection
+ * @brief I2S 声道选择
  *
- * Set to I2S_STD_SLOT_LEFT  if INMP441 L/R pin is tied to GND.
- * Set to I2S_STD_SLOT_RIGHT if INMP441 L/R pin is tied to VDD.
+ * INMP441 的 L/R 引脚决定数据出现在哪个声道：
+ *   L/R → GND : 数据在左声道 → 使用 I2S_STD_SLOT_LEFT
+ *   L/R → VDD : 数据在右声道 → 使用 I2S_STD_SLOT_RIGHT
  */
 #define INMP441_I2S_SLOT     I2S_STD_SLOT_LEFT
 
 /**
- * @brief Bit shift for 32-bit to 16-bit conversion
+ * @brief 32-bit 转 16-bit 的位移量
  *
- * INMP441 outputs 24-bit data left-aligned in a 32-bit frame (bits 31:8).
- * - Use 16 for neutral gain (24-bit -> 16-bit, no amplification)
- * - Use 14 for ~12 dB gain (may clip on loud input)
+ * INMP441 输出 24-bit 数据，左对齐在 32-bit 帧中（有效位在 bit[31:8]）。
+ * 右移后取低 16 位作为最终采样值：
+ *
+ *   位移量 = 16 : 取 bit[31:16]，无增益（推荐初始调试值）
+ *   位移量 = 14 : 取 bit[29:14]，约 +12dB 增益（安静环境可用）
+ *   位移量 = 12 : 取 bit[27:12]，约 +24dB 增益（极安静环境，易削波）
+ *
+ * 建议：先用 16 确认功能正常，再根据实际环境逐步减小位移量提升灵敏度。
  */
-#define INMP441_BIT_SHIFT    (14)
+#define INMP441_BIT_SHIFT    (16)
+
+/* ═══════════════════════════════════════════════════════════
+ *  I2S 配置宏（兼容 IDF 5.x 新驱动和旧版驱动）
+ * ═══════════════════════════════════════════════════════════ */
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 
+/**
+ * IDF 5.x 新 I2S 驱动配置
+ * 参数: sample_rate — 采样率 (Hz)
+ *       channel_fmt — I2S_SLOT_MODE_MONO / I2S_SLOT_MODE_STEREO
+ *       bits_per_chan — 每采样位数 (32 for INMP441)
+ */
 #define I2S_CONFIG_DEFAULT(sample_rate, channel_fmt, bits_per_chan) { \
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate), \
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits_per_chan, channel_fmt), \
@@ -131,6 +147,9 @@
 
 #else
 
+/**
+ * IDF 4.x 旧 I2S 驱动配置（向后兼容）
+ */
 #define I2S_CONFIG_DEFAULT(sample_rate, channel_fmt, bits_per_chan) { \
     .mode                   = I2S_MODE_MASTER | I2S_MODE_RX, \
     .sample_rate            = sample_rate, \
