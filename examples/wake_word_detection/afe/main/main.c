@@ -70,6 +70,7 @@ void detect_Task(void *arg)
             printf("wakeword detected\n");
 	        printf("model index:%d, word index:%d\n", res->wakenet_model_index, res->wake_word_index);
             printf("-----------LISTENING-----------\n");
+            // TODO 唤醒流程
         }
     }
     if (buff) {
