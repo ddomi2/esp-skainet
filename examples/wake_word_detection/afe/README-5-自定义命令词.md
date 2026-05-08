@@ -1,566 +1,362 @@
-# 自定义命令词实现指南
+# 自定义命令词 — 踩坑记录与最终方案
 
-> 本文档说明如何用代码方式自定义命令词，替代系统默认的 313 条命令词。
+> 记录从"能不能自定义命令词"到最终实现的完整过程，包括走过的弯路和解决方案。
 > 对应代码文件：`main/main.c`
 
 ---
 
 ## 目录
 
-1. [改动概述](#1-改动概述)
-2. [拼音规则详解](#2-拼音规则详解)
-3. [代码结构详解](#3-代码结构详解)
-4. [命令词列表（当前 26 条）](#4-命令词列表当前-26-条)
-5. [如何添加新命令词](#5-如何添加新命令词)
-6. [同义词机制](#6-同义词机制)
-7. [动作分发 execute_command()](#7-动作分发-execute_command)
-8. [与之前版本的对比](#8-与之前版本的对比)
-9. [编译烧录步骤](#9-编译烧录步骤)
-10. [常见问题](#10-常见问题)
+1. [最初的问题](#1-最初的问题)
+2. [第一次尝试：只注册 25 条自定义命令（失败）](#2-第一次尝试只注册-25-条自定义命令失败)
+3. [第二次尝试：保留 313 条 + action_map 过滤（部分成功）](#3-第二次尝试保留-313-条--action_map-过滤部分成功)
+4. [隐藏 BUG：mn_result->string 前导空格](#4-隐藏-bugmn_result-string-前导空格)
+5. [第三次尝试：313 内置 + 自定义追加（最终方案 ✅）](#5-第三次尝试313-内置--自定义追加最终方案-)
+6. [最终结果](#6-最终结果)
+7. [唤醒词能自定义吗？](#7-唤醒词能自定义吗)
+8. [如何添加新的自定义命令词](#8-如何添加新的自定义命令词)
+9. [关键代码结构](#9-关键代码结构)
 
 ---
 
-## 1. 改动概述
+## 1. 最初的问题
 
-### 核心改动：一行代码的替换
+> "命令词可以自己任意自定义吗？比如 `da kai you yan ji`（打开油烟机）？  
+> 唤醒词可以自定义吗？比如 `嗨，韩梅梅`？"
 
-```diff
-- #include "esp_process_sdkconfig.h"
-+ #include "esp_mn_speech_commands.h"
-```
-
-```diff
-- // 从 sdkconfig 加载 313 条系统默认命令词
-- esp_mn_commands_update_from_sdkconfig(multinet, model_data);
-
-+ // 注册自定义命令词（仅 26 条，精准匹配实际需求）
-+ register_custom_commands(multinet, model_data);
-```
-
-```diff
-+ // 识别成功后执行对应动作
-+ execute_command(mn_result->command_id[0], mn_result->string, mn_result->prob[0]);
-```
-
-### 变化对比
-
-| 项目 | 之前（v1） | 现在（v2） |
-|------|-----------|-----------|
-| 命令词来源 | sdkconfig 系统默认 | 代码中手动定义 |
-| 命令词数量 | 313 条 | 26 条（18 个 command_id） |
-| 同义词支持 | ❌ | ✅ 同一 ID 绑定多种说法 |
-| 动作执行 | ❌ 仅打印 TODO | ✅ execute_command() 分发 |
-| 置信度过滤 | ❌ | ✅ < 0.5 自动忽略 |
-| 可维护性 | 需修改 menuconfig | 修改代码数组即可 |
+**答案：**
+- **命令词** → ✅ 可以自定义！任意有效拼音组合都能注册
+- **唤醒词** → ❌ 不能自定义！必须使用乐鑫预训练的模型（约 50+ 种）
 
 ---
 
-## 2. 拼音规则详解
+## 2. 第一次尝试：只注册 25 条自定义命令（失败）
 
-### 基本规则
-
-MultiNet 中文模型使用 **汉语拼音** 作为命令词输入，规则如下：
-
-| 规则 | 说明 | 示例 |
-|------|------|------|
-| **空格分隔** | 每个汉字的拼音之间用空格分开 | "打开灯" → `"da kai deng"` |
-| **小写字母** | 全部使用小写 | ✅ `"da kai"` ❌ `"Da Kai"` |
-| **无声调** | 不需要标注声调数字 | ✅ `"da kai"` ❌ `"da4 kai1"` |
-| **无标点** | 不要加逗号、句号等 | ✅ `"da kai deng"` ❌ `"da kai, deng"` |
-| **音节准确** | 按标准拼音，不要用方言/缩写 | ✅ `"kong tiao"` ❌ `"kongtiao"` |
-
-### 拼音转换示例
-
-| 中文 | 拼音 | 说明 |
-|------|------|------|
-| 打开灯 | `da kai deng` | 3 个音节 |
-| 关闭空调 | `guan bi kong tiao` | 4 个音节 |
-| 升高一度 | `sheng gao yi du` | 4 个音节 |
-| 播放音乐 | `bo fang yin yue` | 4 个音节 |
-| 下一首 | `xia yi shou` | 3 个音节 |
-| 大声一点 | `da sheng yi dian` | 4 个音节 |
-| 打开窗帘 | `da kai chuang lian` | 4 个音节 |
-| 开灯 | `kai deng` | 2 个音节（短命令也可以） |
-
-### 特殊拼音注意
-
-| 易错字 | 正确拼音 | 常见错误 |
-|--------|---------|---------|
-| 量 (liáng/liàng) | `liang` | `lian` |
-| 帘 (lián) | `lian` | `lien` |
-| 窗 (chuāng) | `chuang` | `cuang` |
-| 乐 (yuè) | `yue` | `le`（此处读 yuè） |
-| 扇 (shàn) | `shan` | `san` |
-| 调 (tiáo) in 空调 | `tiao` | `diao` |
-
-### 如何查拼音
-
-1. **百度搜索**: 搜 "打开灯 拼音"
-2. **Python**: `pip install pypinyin`，然后 `from pypinyin import pinyin, Style; pinyin('打开灯', style=Style.NORMAL)`
-3. **ESP-SR 工具**: `esp-sr/tool/multinet_g2p.py`（生成音素，更精确）
-
----
-
-## 3. 代码结构详解
-
-### 3.1 文件改动总览
-
-只修改了一个文件：`main/main.c`
-
-```
-main/main.c
-├── #include "esp_mn_speech_commands.h"   ← 新增头文件
-├── enum { CMD_LIGHT_ON, ... }           ← 新增：命令 ID 枚举
-├── custom_cmd_t custom_commands[]       ← 新增：命令词表（拼音→ID 映射）
-├── register_custom_commands()            ← 新增：注册函数
-├── execute_command()                     ← 新增：动作分发函数
-├── feed_Task()                           ← 未修改
-├── detect_Task()                         ← 修改：调用 register_custom_commands
-└── app_main()                            ← 未修改
-```
-
-### 3.2 核心数据结构
+### 做法
 
 ```c
-/* 命令词条目 */
-typedef struct {
-    int command_id;       // 命令 ID（用于 switch/case 分发）
-    const char *pinyin;   // 汉语拼音（空格分隔音节）
-    const char *label;    // 中文标签（仅用于日志）
-} custom_cmd_t;
+esp_mn_commands_alloc(multinet, model_data);
+esp_mn_commands_clear();  // 清空模型内置的 313 条
 
-/* 命令词表（静态数组，编译时确定） */
-static const custom_cmd_t custom_commands[] = {
-    { CMD_LIGHT_ON,  "da kai deng",  "打开灯" },
-    { CMD_LIGHT_ON,  "kai deng",     "开灯"   },  // 同义词
-    { CMD_LIGHT_OFF, "guan bi deng", "关闭灯" },
-    // ...
+// 只添加 25 条自己想要的
+esp_mn_commands_add(0, "da kai deng");
+esp_mn_commands_add(1, "guan bi deng");
+// ... 共 25 条
+
+esp_mn_commands_update();  // 重建 FST
+```
+
+### 结果：置信度崩溃
+
+```
+┌─── 命令词识别成功 ───┐
+│ command_id=0, 词= da kai deng, 置信度=0.22   ← 废了
+└──────────────────────┘
+⚠️  置信度过低 (0.22)，已忽略
+```
+
+| 命令词数量 | 置信度范围 | 状态 |
+|:---:|:---:|:---:|
+| 25 条 | 0.15 ~ 0.40 | ❌ 完全不可用 |
+| 313 条 | 0.85 ~ 1.00 | ✅ 正常 |
+
+### 根因分析
+
+**MultiNet7 使用 RNNT/CTC 解码器 + FST (有限状态转换器) 搜索图。**
+
+FST 搜索图的工作方式：
+- 模型将语音解码为音素序列
+- FST 图中每个命令词是一条"路径"
+- 模型选择得分最高的路径，置信度 = 最优路径与其他路径的对比
+
+**当路径太少（<50 条）时：**
+- FST 中的音素覆盖太稀疏
+- 模型对任何输入都无法给出高置信度（因为没有足够的"对比路径"）
+- 这是模型内部数学机制，不是代码 bug
+
+### 教训
+
+> ⚠️ MultiNet7 不适合极少量命令词。需要 200+ 条命令词才能维持正常置信度。
+
+---
+
+## 3. 第二次尝试：保留 313 条 + action_map 过滤（部分成功）
+
+### 思路
+
+既然不能减少命令词，那就保留全部 313 条，在代码层面用 `action_map[]` 筛选：
+
+```c
+// 不调用任何 command 管理 API，让模型用内置 313 条
+// 只在识别结果中匹配我们关心的命令
+
+static const action_entry_t action_map[] = {
+    { "da kai dian deng",  "打开电灯",  ACT_LIGHT_ON },
+    { "da kai kong tiao",  "打开空调",  ACT_AC_ON    },
+    // ... 只映射你关心的
 };
 ```
 
-### 3.3 注册流程
+### 问题
+
+1. **只能用 313 条内置命令中已有的拼音**，不能自定义
+   - 内置没有 "da kai deng"（只有 "da kai dian deng"）
+   - 内置没有 "bo fang yin yue"（只有 "kai shi bo fang"）
+   - 内置没有 "da kai feng shan"（只有 "da kai feng ji"）
+
+2. **用户必须背住内置命令的精确说法**——体验很差
+
+### 教训
+
+> action_map 只能过滤，不能添加新命令。用户说的词必须在 313 条中有精确匹配。
+
+---
+
+## 4. 隐藏 BUG：mn_result->string 前导空格
+
+### 现象
+
+明明 action_map 中有 `"da kai dian deng"`，但 `strcmp` 总是不匹配：
+
+```
+┌─── 命令词识别 ───┐
+│ 词= da kai dian deng, 置信度=0.94   ← 注意 "词=" 后面有空格!
+└──────────────────┘
+-----------继续聆听...-----------       ← 没有 ✅ 输出!
+```
+
+### 根因
+
+`mn_result->string` 返回的字符串**带前导空格**：`" da kai dian deng"`（注意开头的空格）
+
+代码中 `strcmp(" da kai dian deng", "da kai dian deng")` → 不相等！
+
+### 修复
 
 ```c
-static void register_custom_commands(multinet, model_data)
+static void execute_command(const char *pinyin, float confidence)
 {
-    // ① 初始化命令词链表
+    /* 跳过模型返回字符串中的前导空格 */
+    while (*pinyin == ' ') pinyin++;
+
+    for (int i = 0; i < ACTION_MAP_SIZE; i++) {
+        if (strcmp(pinyin, action_map[i].pinyin) == 0) {
+            // 匹配成功，执行动作
+        }
+    }
+}
+```
+
+### 教训
+
+> ⚠️ MultiNet7 返回的 `mn_result->string` 带前导空格！比较前必须 trim。
+
+---
+
+## 5. 第三次尝试：313 内置 + 自定义追加（最终方案 ✅）
+
+### 核心思路
+
+```
+既然模型需要 200+ 条命令词维持置信度，
+那我就：
+  ① 把 313 条内置命令全部重新注册回去
+  ② 在此基础上追加我的自定义命令
+  ③ 总计 332 条 → FST 正常 → 置信度正常 → 自定义命令也能识别
+```
+
+### 实现
+
+```c
+static void register_all_commands(multinet, model_data)
+{
     esp_mn_commands_alloc(multinet, model_data);
 
-    // ② 清空已有命令词
-    esp_mn_commands_clear();
-
-    // ③ 逐条添加自定义命令词
-    for (每条命令) {
-        esp_mn_commands_add(command_id, pinyin);
+    // ① 注册全部 313 条内置命令 (ID 1~313)
+    for (int i = 0; i < 313; i++) {
+        esp_mn_commands_add(i + 1, builtin_commands[i]);
     }
 
-    // ④ 编译为 FST 搜索图（必须调用！）
+    // ② 追加自定义命令 (ID 400+)
+    esp_mn_commands_add(400, "da kai deng");
+    esp_mn_commands_add(400, "kai deng");
+    esp_mn_commands_add(402, "da kai feng shan");
+    esp_mn_commands_add(404, "bo fang yin yue");
+    // ...
+
+    // ③ 重建 FST 搜索图
     esp_mn_commands_update();
 }
 ```
 
-> ⚠️ **esp_mn_commands_update() 必须调用**，否则 MultiNet 不会生效新命令词。
+### 为什么需要重新注册 313 条？
 
-### 3.4 识别 → 动作执行流程
-
-```
-用户说 "打开灯"
-    │
-    ├─ MultiNet 识别 → mn_state == ESP_MN_STATE_DETECTED
-    │
-    ├─ mn_result->command_id[0] == 0  (CMD_LIGHT_ON)
-    │  mn_result->string == "da kai deng"
-    │  mn_result->prob[0] == 0.95
-    │
-    ├─ execute_command(0, "da kai deng", 0.95)
-    │
-    ├─ 置信度 0.95 > 0.5 → 通过
-    │
-    ├─ switch(0) → case CMD_LIGHT_ON:
-    │   printf("💡 执行: 打开灯")
-    │   // TODO: gpio_set_level(GPIO_LED, 1);
-    │
-    └─ 继续聆听下一条命令...
-```
+`esp_mn_commands_update_from_sdkconfig()` 对 MultiNet7 **直接 return NULL**（什么都不做）。
+313 条命令词是模型 `create()` 时内部加载的。一旦调用 `esp_mn_commands_alloc()` + `update()`，
+模型的 FST 会被**完全替换**为你链表中的内容。所以必须把 313 条重新加进去。
 
 ---
 
-## 4. 命令词列表（当前 26 条）
+## 6. 最终结果
 
-| command_id | 枚举名 | 拼音 | 中文 | 说明 |
-|:---:|--------|------|------|------|
-| 0 | CMD_LIGHT_ON | `da kai deng` | 打开灯 | 主表述 |
-| 0 | CMD_LIGHT_ON | `kai deng` | 开灯 | 同义词 |
-| 1 | CMD_LIGHT_OFF | `guan bi deng` | 关闭灯 | 主表述 |
-| 1 | CMD_LIGHT_OFF | `guan deng` | 关灯 | 同义词 |
-| 2 | CMD_AC_ON | `da kai kong tiao` | 打开空调 | |
-| 3 | CMD_AC_OFF | `guan bi kong tiao` | 关闭空调 | |
-| 4 | CMD_TEMP_UP | `sheng gao yi du` | 升高一度 | 主表述 |
-| 4 | CMD_TEMP_UP | `tiao gao yi du` | 调高一度 | 同义词 |
-| 5 | CMD_TEMP_DOWN | `jiang di yi du` | 降低一度 | 主表述 |
-| 5 | CMD_TEMP_DOWN | `tiao di yi du` | 调低一度 | 同义词 |
-| 6 | CMD_FAN_ON | `da kai feng shan` | 打开风扇 | |
-| 7 | CMD_FAN_OFF | `guan bi feng shan` | 关闭风扇 | |
-| 8 | CMD_FAN_UP | `zeng da feng su` | 增大风速 | |
-| 9 | CMD_FAN_DOWN | `jian xiao feng su` | 减小风速 | |
-| 10 | CMD_MUSIC_PLAY | `bo fang yin yue` | 播放音乐 | |
-| 11 | CMD_MUSIC_PAUSE | `zan ting yin yue` | 暂停音乐 | 主表述 |
-| 11 | CMD_MUSIC_PAUSE | `zan ting` | 暂停 | 同义词 |
-| 12 | CMD_MUSIC_NEXT | `xia yi shou` | 下一首 | |
-| 13 | CMD_MUSIC_PREV | `shang yi shou` | 上一首 | |
-| 14 | CMD_VOL_UP | `zeng da yin liang` | 增大音量 | 主表述 |
-| 14 | CMD_VOL_UP | `da sheng yi dian` | 大声一点 | 同义词 |
-| 15 | CMD_VOL_DOWN | `jian xiao yin liang` | 减小音量 | 主表述 |
-| 15 | CMD_VOL_DOWN | `xiao sheng yi dian` | 小声一点 | 同义词 |
-| 16 | CMD_CURTAIN_OPEN | `da kai chuang lian` | 打开窗帘 | |
-| 17 | CMD_CURTAIN_CLOSE | `guan bi chuang lian` | 关闭窗帘 | |
+```
+┌─── 注册内置命令词: 313 成功, 0 失败 ───┐
+│ 注册自定义命令词: 19 成功, 0 失败
+└─── 总计: 332 条命令词 ───┘
+332 active speech commands:
+```
 
-> **18 个唯一 command_id，26 条拼音表述（含 8 组同义词）**
+**识别效果：**
+
+| 命令 | 类型 | 置信度 | 说明 |
+|------|:---:|:---:|------|
+| "打开风扇" `da kai feng shan` | 自定义 | **0.95** | 🟢 内置没有，自定义成功 |
+| "打开灯" `da kai deng` | 自定义 | **0.72** | 🟢 内置没有，自定义成功 |
+| "打开电灯" `da kai dian deng` | 内置 | **0.70** | 🟢 内置命令仍然正常 |
+| "播放音乐" `bo fang yin yue` | 自定义 | 0.25 | 🟡 能识别，置信度偏低 |
+
+### 三种方案对比
+
+| 方案 | "打开灯" | "打开风扇" | 能否自定义 |
+|------|:---:|:---:|:---:|
+| ❌ 方案1: 只用 25 条自定义 | 0.22 | 0.19 | ✅ 但置信度废了 |
+| ⚠️ 方案2: 313 内置 + 过滤 | 不存在 | 不存在 | ❌ 只能用内置的 |
+| ✅ **方案3: 313 + 自定义** | **0.72** | **0.95** | ✅ 完美 |
 
 ---
 
-## 5. 如何添加新命令词
+## 7. 唤醒词能自定义吗？
 
-### 步骤一：定义 command_id
+**不能。** 唤醒词需要预训练的神经网络模型，无法通过 API 自定义。
 
-在 `enum` 中添加新的 ID：
+| 对比 | 命令词 | 唤醒词 |
+|------|--------|--------|
+| 自定义 | ✅ `esp_mn_commands_add()` | ❌ 需要训练模型 |
+| 灵活度 | 任意拼音组合 | 只能用预训练的 50+ 种 |
+| 添加方式 | 代码中添加一行 | 需要联系乐鑫定制或使用现有 |
+| 工作原理 | FST 搜索图匹配 | WakeNet 神经网络端到端检测 |
 
-```c
-enum {
-    // ... 已有的 ...
-    CMD_CURTAIN_CLOSE = 17,
+**可用的唤醒词示例**（完整列表见 `README-4-模型加载-唤醒词命令词.md`）：
+- 中文："嗨，乐鑫"、"你好小智"、"小爱同学" 等
+- 英文："Hi ESP"、"Alexa" 等
 
-    // ── 新增 ──
-    CMD_TV_ON         = 18,  // 打开电视
-    CMD_TV_OFF        = 19,  // 关闭电视
+---
 
-    CMD_MAX
-};
-```
+## 8. 如何添加新的自定义命令词
 
-### 步骤二：添加命令词条目
-
-在 `custom_commands[]` 数组末尾添加：
+### 步骤 1：在 `custom_commands[]` 中添加拼音
 
 ```c
 static const custom_cmd_t custom_commands[] = {
     // ... 已有的 ...
-    { CMD_CURTAIN_CLOSE, "guan bi chuang lian", "关闭窗帘" },
+    { 411, "guan bi chuang lian", "关闭窗帘" },
 
-    /* ── 电视控制（新增） ── */
-    { CMD_TV_ON,         "da kai dian shi",     "打开电视" },
-    { CMD_TV_ON,         "kai dian shi",        "开电视"   },  // 同义词
-    { CMD_TV_OFF,        "guan bi dian shi",    "关闭电视" },
-    { CMD_TV_OFF,        "guan dian shi",       "关电视"   },  // 同义词
+    /* ── 新增：打开油烟机 ── */
+    { 420, "da kai you yan ji",   "打开油烟机" },
+    { 421, "guan bi you yan ji",  "关闭油烟机" },
 };
 ```
 
-### 步骤三：添加动作处理
-
-在 `execute_command()` 的 switch 中添加：
+### 步骤 2：在 `action_map[]` 中添加动作映射
 
 ```c
-case CMD_TV_ON:
-    printf("📺 执行: 打开电视\n");
-    // gpio_set_level(GPIO_TV_RELAY, 1);
-    break;
-case CMD_TV_OFF:
-    printf("📺 执行: 关闭电视\n");
-    // gpio_set_level(GPIO_TV_RELAY, 0);
-    break;
+static const action_entry_t action_map[] = {
+    // ... 已有的 ...
+    { "da kai you yan ji",   "打开油烟机",  ACT_HOOD_ON  },
+    { "guan bi you yan ji",  "关闭油烟机",  ACT_HOOD_OFF },
+};
 ```
 
-### 步骤四：重新编译
+### 步骤 3：在 `execute_command()` 中添加处理
+
+```c
+case ACT_HOOD_ON:   printf("🍳 执行: 打开油烟机\n"); break;
+case ACT_HOOD_OFF:  printf("🍳 执行: 关闭油烟机\n"); break;
+```
+
+### 步骤 4：编译烧录
 
 ```bash
-idf.py build
-idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
-```
-
-> ⚠️ 自定义命令词的改动**只需要 `build` + `flash`**，不需要 `fullclean` 或 `set-target`。
-
----
-
-## 6. 同义词机制
-
-### 原理
-
-同一个 `command_id` 可以绑定多条拼音。用户说任意一条，都返回相同的 `command_id`。
-
-```c
-// 这两条拼音都会触发 command_id=0
-{ CMD_LIGHT_ON, "da kai deng", "打开灯" },   // 说 "打开灯" → id=0
-{ CMD_LIGHT_ON, "kai deng",    "开灯"   },   // 说 "开灯"   → id=0
-```
-
-### 识别结果区分
-
-虽然 `command_id` 相同，但 `phrase_id` 不同，可以知道用户说的是哪一种表述：
-
-```
-说 "打开灯" → command_id=0, phrase_id=0, string="da kai deng"
-说 "开灯"   → command_id=0, phrase_id=1, string="kai deng"
-```
-
-### 同义词设计建议
-
-| 场景 | 主表述 | 同义词1 | 同义词2 |
-|------|--------|---------|---------|
-| 开灯 | `da kai deng` | `kai deng` | `ba deng da kai` |
-| 关灯 | `guan bi deng` | `guan deng` | `ba deng guan diao` |
-| 增大音量 | `zeng da yin liang` | `da sheng yi dian` | `yin liang da yi dian` |
-
-> 同义词越多，识别越灵活，但也可能增加误识别。建议每个 ID 不超过 3~4 条同义词。
-
----
-
-## 7. 动作分发 execute_command()
-
-### 当前实现（纯日志）
-
-```c
-static void execute_command(int command_id, const char *phrase, float confidence)
-{
-    if (confidence < 0.5) {
-        printf("⚠️  置信度过低，已忽略\n");
-        return;
-    }
-
-    switch (command_id) {
-    case CMD_LIGHT_ON:
-        printf("💡 执行: 打开灯\n");
-        break;
-    // ...
-    }
-}
-```
-
-### 实际项目中的替换方案
-
-#### 方案 A：GPIO 直接控制
-
-```c
-#include "driver/gpio.h"
-#define GPIO_LED 48
-
-case CMD_LIGHT_ON:
-    gpio_set_level(GPIO_LED, 1);
-    break;
-```
-
-#### 方案 B：MQTT 发消息
-
-```c
-#include "mqtt_client.h"
-
-case CMD_LIGHT_ON:
-    esp_mqtt_client_publish(mqtt_client,
-        "home/light/cmd", "ON", 0, 1, 0);
-    break;
-```
-
-#### 方案 C：UART 发指令给外部 MCU
-
-```c
-case CMD_LIGHT_ON:
-    uart_write_bytes(UART_NUM_1, "LIGHT_ON\n", 9);
-    break;
-```
-
----
-
-## 8. 与之前版本的对比
-
-### 代码 diff 总结
-
-```diff
- 头文件：
-- #include "esp_process_sdkconfig.h"
-+ #include "esp_mn_speech_commands.h"
-
- 新增代码：
-+ enum { CMD_LIGHT_ON = 0, ... CMD_MAX }     (~20 行)
-+ custom_cmd_t custom_commands[]              (~30 行)
-+ register_custom_commands()                  (~25 行)
-+ execute_command()                            (~50 行)
-
- 修改代码（detect_Task 内）：
-- esp_mn_commands_update_from_sdkconfig(multinet, model_data);
-+ register_custom_commands(multinet, model_data);
-
-- /* TODO: 在这里根据 command_id 执行对应动作 */
-+ execute_command(mn_result->command_id[0], mn_result->string, mn_result->prob[0]);
-```
-
-### 运行效果对比
-
-**之前（313 条系统命令）：**
-
-```
-313 active speech commands:
-Command 1: ba xiao shi hou guan ji
-Command 2: ba xiao shi hou kai ji
-... (省略 311 条)
-```
-
-**现在（26 条自定义命令）：**
-
-```
-┌─── 注册自定义命令词 (26 条) ───┐
-│ ID= 0  da kai deng              打开灯
-│ ID= 0  kai deng                 开灯
-│ ID= 1  guan bi deng             关闭灯
-│ ID= 1  guan deng                关灯
-│ ID= 2  da kai kong tiao         打开空调
-│ ... (共 26 条)
-└──────────────────────────────────┘
-26 active speech commands:
-```
-
-**识别成功后：**
-
-```
-┌─── 命令词识别成功 ───┐
-│ TOP 1: command_id=0, phrase_id=0, 词=da kai deng, 置信度=0.98
-└──────────────────────┘
-💡 执行: 打开灯
------------继续聆听...-----------
-```
-
----
-
-## 9. 编译烧录步骤
-
-### 如果是首次编译（或切换过 target）
-
-```bash
-cd esp-skainet/examples/wake_word_detection/afe
-
-# 1. 清除旧编译（可选，target 不变时不需要）
-idf.py fullclean
-
-# 2. 设置芯片（仅首次或切换芯片时需要）
-idf.py set-target esp32s3
-
-# 3. 选择 INMP441 板型（set-target 后必须做）
-idf.py menuconfig
-#   → Audio Media HAL → Audio hardware board
-#   → 选择 "ESP32-S3-DevKitC-1 (INMP441)"
-
-# 4. 编译
-idf.py build
-
-# 5. 烧录并监控
-idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
-```
-
-### 如果只修改了命令词（最常见）
-
-```bash
-# 修改 main/main.c 中的 custom_commands[] 数组后：
 idf.py build && idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
 ```
 
-> 只改代码不需要 `fullclean` 或 `set-target`，直接 `build + flash` 即可。
+### 拼音规则
 
----
-
-## 10. 常见问题
-
-### Q1: 命令词必须用拼音吗？不能直接写中文？
-
-**是的，中文模型必须用拼音。** MultiNet 内部用拼音音素进行匹配，不支持直接输入汉字。
-
-英文模型可以直接写英文单词（如 `"turn on the light"`）。
-
-### Q2: 拼音写错了会怎样？
-
-`esp_mn_commands_update()` 会返回解析失败的列表。如果拼音完全无法解析（如拼写错误），该条命令不会被注册。运行时日志会显示 `"⚠️ 部分命令词解析失败"`。
-
-### Q3: 最多能添加多少条命令词？
-
-理论上没有硬限制。实际建议：
-- **10~50 条**: 最佳识别率
-- **50~200 条**: 可用，但识别精度略降
-- **200+ 条**: 可能出现混淆，误识别率上升
-
-### Q4: 为什么同一个 command_id 可以有多条拼音？
-
-这是 MultiNet 的同义词功能。不同的人可能用不同的说法表达同一个意思：
-- "打开灯" / "开灯" / "把灯打开" → 都是开灯
-
-绑定到同一个 `command_id` 后，`execute_command()` 只需要处理一个 ID。
-
-### Q5: 置信度阈值设多少合适？
-
-| 阈值 | 效果 |
+| 规则 | 示例 |
 |------|------|
-| 0.3 | 宽松，容易误识别 |
-| **0.5** | 当前默认，平衡 |
-| 0.7 | 严格，可能需要说得更清楚 |
-| 0.9 | 非常严格，可能经常识别不到 |
+| 全小写 | ✅ `da kai deng` ❌ `Da Kai Deng` |
+| 空格分隔音节 | ✅ `da kai deng` ❌ `dakaideng` |
+| 无声调 | ✅ `da kai` ❌ `da4 kai1` |
+| 无标点 | ✅ `da kai deng` ❌ `da kai, deng` |
 
-建议先用 0.5 测试，根据实际环境调整。
+### 什么拼音会被拒绝？
 
-### Q6: 如何同时支持中英文命令？
-
-需要同时加载中文和英文 MultiNet 模型：
-
-```ini
-# sdkconfig.defaults.esp32s3
-CONFIG_SR_MN_CN_MULTINET7_QUANT=y   # 中文
-CONFIG_SR_MN_EN_MULTINET7_QUANT=y   # 英文
+`esp_mn_commands_add()` 内部会调用 `check_speech_command()` 验证拼音。
+如果拼音无法被解析为有效音素序列，注册会失败。启动时会打印：
 ```
-
-代码中需要创建两个 MultiNet 实例，分别处理。
-
-### Q7: esp_mn_commands_add 和 esp_mn_commands_update_from_sdkconfig 能混用吗？
-
-可以。你可以先调用 `esp_mn_commands_update_from_sdkconfig()` 加载默认命令词，然后用 `esp_mn_commands_add()` 追加自定义的。但如果不需要默认的 313 条，直接用 `esp_mn_commands_clear()` + `esp_mn_commands_add()` 更干净。
+│ ⚠️ 自定义命令注册失败: xxx (标签)
+```
 
 ---
 
-## 附录：完整 API 参考
+## 9. 关键代码结构
 
-```c
-/* ── 命令词管理 API ── */
-
-// 初始化命令词链表（必须最先调用）
-esp_err_t esp_mn_commands_alloc(const esp_mn_iface_t *multinet, model_iface_data_t *model_data);
-
-// 添加一条命令词（可多次调用同一 ID 实现同义词）
-esp_err_t esp_mn_commands_add(int command_id, const char *pinyin_string);
-
-// 删除一条命令词
-esp_err_t esp_mn_commands_remove(const char *pinyin_string);
-
-// 修改一条命令词的拼音
-esp_err_t esp_mn_commands_modify(const char *old_pinyin, const char *new_pinyin);
-
-// 清空所有命令词
-esp_err_t esp_mn_commands_clear(void);
-
-// 编译命令词列表为 FST 搜索图（add/remove/modify 后必须调用）
-esp_mn_error_t *esp_mn_commands_update(void);
-
-// 打印所有命令词
-void esp_mn_commands_print(void);
-
-// 释放命令词链表
-esp_err_t esp_mn_commands_free(void);
-
-// 从 sdkconfig 加载默认命令词（我们已替换为自定义方式）
-esp_mn_error_t *esp_mn_commands_update_from_sdkconfig(
-    const esp_mn_iface_t *multinet, model_iface_data_t *model_data);
-
-// 根据 command_id 获取拼音字符串
-char *esp_mn_commands_get_string(int command_id);
 ```
+main/main.c
+├── builtin_commands[313]          ← 内置命令词拼音（从模型中提取）
+├── custom_commands[]              ← 你的自定义命令词
+├── action_map[]                   ← 拼音→动作映射表
+├── register_all_commands()        ← alloc + add(313) + add(custom) + update
+├── execute_command()              ← strcmp 匹配 + switch 分发
+├── feed_Task()                    ← 麦克风 → AFE
+├── detect_Task()                  ← 唤醒词 + 命令词识别
+└── app_main()                     ← 初始化
+```
+
+### 数据流
+
+```
+用户说话 → INMP441 麦克风 → I2S → feed_Task → AFE 引擎
+                                                    │
+                                            ┌───────┴───────┐
+                                            │  唤醒词检测     │
+                                            │ "嗨，乐鑫"     │
+                                            └───────┬───────┘
+                                                    │ 唤醒成功
+                                                    ▼
+                                            ┌───────────────┐
+                                            │  MultiNet 识别  │
+                                            │  332 条 FST    │
+                                            └───────┬───────┘
+                                                    │ string="da kai deng"
+                                                    ▼
+                                            ┌───────────────┐
+                                            │ execute_command │
+                                            │ action_map匹配 │
+                                            └───────┬───────┘
+                                                    │
+                                                    ▼
+                                            💡 执行: 打开灯
+```
+
+---
+
+## 总结：关键教训
+
+| # | 教训 | 说明 |
+|---|------|------|
+| 1 | MultiNet7 需要大量命令词 | <50 条时置信度会崩到 0.15~0.40，无法使用 |
+| 2 | `esp_mn_commands_update()` 会替换整个 FST | 必须把 313 条全部重新注册 |
+| 3 | `mn_result->string` 有前导空格 | 比较前必须 `while (*p == ' ') p++` |
+| 4 | `esp_mn_commands_update_from_sdkconfig()` 对 MN7 无效 | 直接 return NULL |
+| 5 | 313 条内置命令来自模型文件 | `create()` 时自动加载，不依赖 sdkconfig |
+| 6 | 自定义命令可以任意拼音 | 只要能通过 `check_speech_command()` 验证 |
+| 7 | 唤醒词不能自定义 | 需要预训练神经网络模型 |
 
 ---
 
 > 📖 相关文档：
-> - `README-4-模型加载-唤醒词命令词.md` — 模型加载机制与唤醒词详解
-> - `README-1-驱动优化-INMP441.md` — INMP441 驱动优化
+> - `README-4-模型加载-唤醒词命令词.md` — 模型加载机制与可用唤醒词列表
+> - `README-1-驱动优化-INMP441.md` — INMP441 硬件驱动
 > - `README-2-构建流程-从零开始.md` — 完整编译烧录步骤
-> - [ESP-SR 官方文档：命令词识别](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_command_recognition/README.html)
+> - [ESP-SR 官方文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_command_recognition/README.html)
