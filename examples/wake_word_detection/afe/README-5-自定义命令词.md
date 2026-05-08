@@ -560,7 +560,7 @@ char *esp_mn_commands_get_string(int command_id);
 ---
 
 > 📖 相关文档：
-> - `README-模型加载-唤醒词命令词.md` — 模型加载机制与唤醒词详解
-> - `README-驱动优化-INMP441.md` — INMP441 驱动优化
-> - `README-构建流程-从零开始.md` — 完整编译烧录步骤
+> - `README-4-模型加载-唤醒词命令词.md` — 模型加载机制与唤醒词详解
+> - `README-1-驱动优化-INMP441.md` — INMP441 驱动优化
+> - `README-2-构建流程-从零开始.md` — 完整编译烧录步骤
 > - [ESP-SR 官方文档：命令词识别](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_command_recognition/README.html)
