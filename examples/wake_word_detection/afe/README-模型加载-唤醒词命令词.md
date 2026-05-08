@@ -671,7 +671,7 @@ if (mn_state == ESP_MN_STATE_DETECTED) {
 3. 文字送入 LLM (GPT/通义千问) 理解意图
 4. 返回控制指令给 ESP32 执行
 
-参考: README-afe-2.md 中的方案 B 架构图
+参考: README-方案对比-离线vs云端.md 中的方案 B 架构图
 ```
 
 ---
@@ -717,7 +717,7 @@ esp_mn_results_t *result = multinet->get_results(model_data);
 ---
 
 > 📖 相关文档：
-> - `README-afe-1.md` — INMP441 驱动优化详解
-> - `README-afe-2.md` — 离线 vs 云端方案对比
-> - `README-afe-all.md` — 完整编译烧录步骤
-> - `README-afe-todo.md` — 功能对比与 TODO 路线图
+> - `README-驱动优化-INMP441.md` — INMP441 驱动优化详解
+> - `README-方案对比-离线vs云端.md` — 离线 vs 云端方案对比
+> - `README-构建流程-从零开始.md` — 完整编译烧录步骤
+> - `README-TODO-能力路线图.md` — 功能对比与 TODO 路线图
