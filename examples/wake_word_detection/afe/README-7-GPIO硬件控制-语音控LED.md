@@ -1,7 +1,7 @@
-# GPIO 硬件控制 — 语音控制 LED 开关
+# GPIO 硬件控制 — 语音控制 LED + 风扇
 
 > 本文档说明如何通过语音命令实际控制 ESP32-S3 的 GPIO 引脚。
-> 以 LED 开/关为例，演示从"语音识别"到"硬件动作"的完整链路。
+> 已实现：LED 灯（GPIO 2）、风扇（GPIO 7）的语音开关控制。
 
 ---
 
@@ -24,13 +24,14 @@
 ESP32-S3-DevKitC-1
 ┌────────────────┐
 │            GPIO2├───── 330Ω ───── LED (+) ───── GND
-│                │
-│            GPIO4├───── INMP441 SCK
-│            GPIO5├───── INMP441 WS
-│            GPIO6├───── INMP441 SD
-│                │
-│            3.3V├───── INMP441 VDD
-│             GND├───── INMP441 GND / LED (-)
+│            GPIO7├───── 风扇信号 / 继电器 IN ────┐
+│                │                               │
+│            GPIO4├───── INMP441 SCK              │
+│            GPIO5├───── INMP441 WS          [风扇/继电器]
+│            GPIO6├───── INMP441 SD              │
+│                │                               │
+│            3.3V├───── INMP441 VDD              │
+│             GND├───── INMP441 GND / LED (-) ───┘
 └────────────────┘
 ```
 
@@ -40,14 +41,25 @@ ESP32-S3-DevKitC-1
 |------|:---:|------|
 | LED（任意颜色） | 1 | 建议用红色或绿色，容易观察 |
 | 330Ω 电阻 | 1 | 限流保护，防止烧坏 LED |
-| 杜邦线 | 2 | 连接 GPIO2 和 GND |
+| 小风扇 或 继电器模块 | 1 | 3.3V 小风扇可直驱；220V 设备用继电器 |
+| 杜邦线 | 若干 | 连接各引脚 |
 
-### 为什么选 GPIO 2？
+### 风扇接线方式
 
-- ✅ 未被 I2S 麦克风占用（I2S 用 4/5/6）
-- ✅ 未被 Flash/PSRAM 占用（26~37 被占）
-- ✅ 在 DevKitC-1 排针上可直接访问
-- ✅ 支持推挽输出，可直驱 LED
+**方式 A — 直驱 3.3V 小风扇（实验用）：**
+```
+GPIO 7 → 风扇正极 (+)
+GND    → 风扇负极 (-)
+```
+> ⚠️ GPIO 最大输出电流约 40mA，只能驱动微型风扇
+
+**方式 B — 继电器模块控制大功率风扇（推荐）：**
+```
+GPIO 7 → 继电器模块 IN
+3.3V   → 继电器模块 VCC
+GND    → 继电器模块 GND
+风扇   → 继电器 COM/NO 端（接市电需注意安全！）
+```
 
 ---
 
@@ -85,7 +97,7 @@ main/
 ## 3. 工作原理
 
 ```
-用户说 "打开灯"
+用户说 "打开灯" / "打开风扇"
        │
        ▼
 ┌────────────────────┐
@@ -105,20 +117,30 @@ main/
          ▼
 ┌────────────────────┐
 │  MultiNet 命令词    │  识别 → string=" da kai deng"
-└────────┬───────────┘
+└────────┬───────────┘         或 " da kai feng shan"
          │
          ▼
 ┌────────────────────┐
 │  cmd_handler_execute│  strcmp 匹配 action_map[]
-│                    │  → 找到 ACT_LIGHT_ON
+│                    │  → ACT_LIGHT_ON / ACT_FAN_ON
 └────────┬───────────┘
          │
-         ▼
-┌────────────────────┐
-│  gpio_ctrl_led_set │  GPIO 2 → HIGH → LED 亮
-│       (true)       │
-└────────────────────┘
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌────────┐
+│ GPIO 2 │ │ GPIO 7 │
+│LED 亮  │ │风扇 转 │
+└────────┘ └────────┘
 ```
+
+### 支持的语音命令
+
+| 语音命令 | 拼音 | 动作 | 硬件 |
+|---------|------|------|------|
+| "打开灯" / "开灯" / "打开电灯" | da kai deng / kai deng / da kai dian deng | ACT_LIGHT_ON | GPIO 2 → HIGH |
+| "关灯" / "关闭灯" / "关闭电灯" | guan deng / guan bi deng / guan bi dian deng | ACT_LIGHT_OFF | GPIO 2 → LOW |
+| "打开风扇" / "打开风机" | da kai feng shan / da kai feng ji | ACT_FAN_ON | GPIO 7 → HIGH |
+| "关闭风扇" / "关闭风机" | guan bi feng shan / guan bi feng ji | ACT_FAN_OFF | GPIO 7 → LOW |
 
 ### 关键代码片段
 
@@ -127,22 +149,40 @@ main/
 ```c
 case ACT_LIGHT_ON:
     printf("💡 执行: 打开灯\n");
-    gpio_ctrl_led_set(true);   /* ← 实际控制 GPIO 输出高电平 */
+    gpio_ctrl_led_set(true);   /* ← GPIO 2 输出高电平，LED 亮 */
     break;
 
 case ACT_LIGHT_OFF:
     printf("💡 执行: 关闭灯\n");
-    gpio_ctrl_led_set(false);  /* ← GPIO 输出低电平 */
+    gpio_ctrl_led_set(false);  /* ← GPIO 2 输出低电平，LED 灭 */
+    break;
+
+case ACT_FAN_ON:
+    printf("🌀 执行: 打开风扇\n");
+    gpio_ctrl_fan_set(true);   /* ← GPIO 7 输出高电平，风扇转 */
+    break;
+
+case ACT_FAN_OFF:
+    printf("🌀 执行: 关闭风扇\n");
+    gpio_ctrl_fan_set(false);  /* ← GPIO 7 输出低电平，风扇停 */
     break;
 ```
 
 **gpio_ctrl.c** — 底层 GPIO 操作：
 
 ```c
+/* LED 控制 */
 void gpio_ctrl_led_set(bool on)
 {
     s_led_state = on;
-    gpio_set_level(GPIO_LED_PIN, on ? 1 : 0);  /* 直接设置引脚电平 */
+    gpio_set_level(GPIO_LED_PIN, on ? 1 : 0);
+}
+
+/* 风扇控制 */
+void gpio_ctrl_fan_set(bool on)
+{
+    s_fan_state = on;
+    gpio_set_level(GPIO_FAN_PIN, on ? 1 : 0);
 }
 ```
 
@@ -211,7 +251,8 @@ idf.py build && idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
 | **4** | **I2S SCK (INMP441)** | 🔴 已占用 |
 | **5** | **I2S WS (INMP441)** | 🔴 已占用 |
 | **6** | **I2S SD (INMP441)** | 🔴 已占用 |
-| 7~21 | 可用 | 🟢 空闲 |
+| **7** | **风扇控制** | 🔴 已占用 |
+| 8~21 | 可用 | 🟢 空闲 |
 | 26~37 | Flash/PSRAM (N16R8) | ❌ 不可用 |
 | 38~48 | 可用 | 🟢 空闲 |
 
@@ -240,7 +281,7 @@ idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
 ### 预期输出
 
 ```
-I (xxx) gpio_ctrl: GPIO 初始化完成 — LED 引脚: GPIO2
+I (xxx) gpio_ctrl: GPIO 初始化完成 — LED: GPIO2, 风扇: GPIO7
 ...
 ┌─── 注册内置命令词: 313 成功, 0 失败 ───┐
 │ 注册自定义命令词: 19 成功, 0 失败
@@ -250,7 +291,9 @@ I (xxx) gpio_ctrl: GPIO 初始化完成 — LED 引脚: GPIO2
 ```
 
 说 "嗨，乐鑫" → "打开灯" → LED 亮 ✅  
-说 "嗨，乐鑫" → "关灯" → LED 灭 ✅
+说 "嗨，乐鑫" → "关灯" → LED 灭 ✅  
+说 "嗨，乐鑫" → "打开风扇" → 风扇转 ✅  
+说 "嗨，乐鑫" → "关闭风扇" → 风扇停 ✅
 
 ---
 
@@ -261,6 +304,7 @@ I (xxx) gpio_ctrl: GPIO 初始化完成 — LED 引脚: GPIO2
 | 识别到命令只是 printf | 识别到命令 → 实际控制 GPIO |
 | 所有代码在 main.c (780行) | 拆分 3 个文件，各司其职 |
 | 添加新设备要改一大坨代码 | 只需改 gpio_ctrl + cmd_handler 对应位置 |
+| 只支持 LED | 已支持 LED (GPIO2) + 风扇 (GPIO7) |
 
 ---
 

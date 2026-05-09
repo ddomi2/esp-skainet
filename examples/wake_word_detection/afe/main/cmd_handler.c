@@ -604,11 +604,12 @@ void cmd_handler_execute(const char *pinyin, float confidence)
 
             case ACT_FAN_ON:
                 printf("🌀 执行: 打开风扇\n");
-                /* TODO: 可复用 GPIO 控制继电器 */
+                gpio_ctrl_fan_set(true);   /* ← 实际控制 GPIO 开启风扇 */
                 break;
 
             case ACT_FAN_OFF:
                 printf("🌀 执行: 关闭风扇\n");
+                gpio_ctrl_fan_set(false);  /* ← 实际控制 GPIO 关闭风扇 */
                 break;
 
             case ACT_FAN_UP:
