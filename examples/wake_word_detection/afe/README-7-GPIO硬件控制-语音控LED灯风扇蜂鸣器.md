@@ -83,34 +83,87 @@ GND    → 蜂鸣器负极 (-)
 
 ---
 
-## 2. 代码结构（重构后）
+## 2. 代码结构（模块化重构）
 
-原来所有代码都在 `main.c`（780+ 行），现在拆分为 3 个模块：
+### 设计思路
+
+> **一个设备 = 一对 .h/.c 文件**
+
+之前 LED、风扇、蜂鸣器全部混在一个 `gpio_ctrl.c` 里（200+ 行），对不熟悉项目的人来说很难分清哪段代码控制哪个设备。
+
+重构原则：
+1. **职责单一** — 每个文件只做一件事，改风扇不用看 LED 代码
+2. **伞形头文件** — 外部只需 `#include "gpio_ctrl.h"` 就能用全部设备
+3. **统一入口** — `gpio_ctrl_init()` 内部依次调各子模块 init，调用者无感知
+4. **易扩展** — 新设备只需创建 `gpio_xxx.h/c`，在 `gpio_ctrl.h` 加一行 `#include`
+
+### 文件结构
 
 ```
 main/
-├── CMakeLists.txt     ← 构建注册（3个 .c 文件）
-├── main.c             ← 入口：任务函数 + app_main（~242 行）
-├── cmd_handler.h      ← 命令词处理接口
-├── cmd_handler.c      ← 313 内置 + 自定义命令 + 动作映射 + 执行
-├── gpio_ctrl.h        ← GPIO 硬件控制接口（LED / 风扇 / 蜂鸣器）
-└── gpio_ctrl.c        ← 硬件实现：GPIO + LEDC PWM
+├── CMakeLists.txt      ← 注册所有 .c 文件（新增设备在此追加）
+├── main.c              ← 入口：任务 + app_main（不碰设备细节）
+├── cmd_handler.h/c     ← 命令词注册 + 动作执行分发
+├── gpio_ctrl.h         ← 🎯 总控头文件（#include 所有设备 + 统一 init）
+├── gpio_ctrl.c         ← 🎯 统一初始化入口（~30 行，调用各子模块 init）
+├── gpio_led.h/c        ← 💡 LED 灯（GPIO 2，简单高低电平）
+├── gpio_fan.h/c        ← 🌀 风扇（GPIO 7，简单高低电平）
+└── gpio_buzzer.h/c     ← 🔔 蜂鸣器（GPIO 9，LEDC PWM 音量控制）
+```
+
+### 调用关系图
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  main.c                                                 │
+│    #include "gpio_ctrl.h"  ← 只引这一个头文件           │
+│    gpio_ctrl_init();       ← 只调这一个 init            │
+└──────────────┬──────────────────────────────────────────┘
+               │
+┌──────────────▼──────────────────────────────────────────┐
+│  gpio_ctrl.h  (伞形头文件)                               │
+│    #include "gpio_led.h"                                │
+│    #include "gpio_fan.h"                                │
+│    #include "gpio_buzzer.h"                             │
+│    esp_err_t gpio_ctrl_init(void);                      │
+└──────────────┬──────────────────────────────────────────┘
+               │
+┌──────────────▼──────────────────────────────────────────┐
+│  gpio_ctrl.c  (统一初始化入口)                           │
+│    gpio_led_init();     → 配置 GPIO 2 为输出            │
+│    gpio_fan_init();     → 配置 GPIO 7 为输出            │
+│    gpio_buzzer_init();  → 配置 LEDC PWM (GPIO 9)       │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  cmd_handler.c                                          │
+│    #include "gpio_ctrl.h"  ← 同样只引这一个头文件       │
+│    case ACT_LIGHT_ON:  gpio_led_set(true);              │
+│    case ACT_FAN_ON:    gpio_fan_set(true);              │
+│    case ACT_MUSIC_PLAY: gpio_buzzer_set(true);          │
+│    case ACT_VOL_UP:    gpio_buzzer_vol_up();            │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### 各文件职责
 
-| 文件 | 职责 |
-|------|------|
-| `main.c` | 初始化 + feed_Task + detect_Task |
-| `cmd_handler.c` | 命令词数据 + 注册逻辑 + 动作执行分发 |
-| `gpio_ctrl.c` | GPIO 初始化 + LED / 风扇 / 蜂鸣器 PWM 控制 |
+| 文件 | 行数 | 职责 | 改动场景 |
+|------|:---:|------|---------|
+| `main.c` | ~242 | 初始化 + feed_Task + detect_Task | 改识别流程 |
+| `cmd_handler.c` | ~670 | 命令词数据 + 注册 + 动作分发 | 添加新命令词/动作 |
+| `gpio_ctrl.h` | ~35 | 伞形头文件（include 子模块） | 新增设备时加一行 include |
+| `gpio_ctrl.c` | ~30 | 统一 init 入口 | 新增设备时加一行 init 调用 |
+| `gpio_led.c` | ~50 | LED 控制（set/get/toggle） | 只改 LED 逻辑 |
+| `gpio_fan.c` | ~45 | 风扇控制（set/get） | 只改风扇逻辑 |
+| `gpio_buzzer.c` | ~100 | 蜂鸣器 PWM（set/vol_up/vol_down） | 只改蜂鸣器逻辑 |
 
 ### 好处
 
 - **修改命令词** → 只改 `cmd_handler.c`
-- **添加新设备** → 只改 `gpio_ctrl.c` + `gpio_ctrl.h`
+- **添加新设备** → 创建 `gpio_xxx.h/c`，`gpio_ctrl.h` 加一行 include
+- **修改某个设备** → 只碰那一个文件（如改蜂鸣器频率只改 `gpio_buzzer.c`）
 - **修改识别流程** → 只改 `main.c`
-- 互不影响，编译也更快（增量编译只重编改动的文件）
+- 互不影响，增量编译也更快（只重编改动的 .c）
 
 ---
 
@@ -207,7 +260,7 @@ GPIO 9 ──┘                          → 满功率 → 最大音量
 
 ### 关键代码
 
-**gpio_ctrl.c** — LEDC 初始化：
+**gpio_buzzer.c** — LEDC 初始化：
 
 ```c
 /* LEDC 定时器 → 控制频率 */
@@ -228,16 +281,16 @@ ledc_channel_config_t ch_conf = {
 };
 ```
 
-**gpio_ctrl.c** — 音量调节核心逻辑：
+**gpio_buzzer.c** — 音量调节核心逻辑：
 
 ```c
 static void buzzer_update_duty(void)
 {
-    if (!s_buzzer_state) {
+    if (!s_state) {
         ledc_set_duty(mode, channel, 0);       /* 关闭 → duty=0 */
     } else {
         /* 音量 1~10 → 占空比 10%~100% */
-        uint32_t duty = (1023 * s_buzzer_vol) / 10;
+        uint32_t duty = (1023 * s_vol) / 10;
         ledc_set_duty(mode, channel, duty);
     }
     ledc_update_duty(mode, channel);           /* 立即生效 */
@@ -248,38 +301,107 @@ static void buzzer_update_duty(void)
 
 ## 5. 如何扩展新设备
 
-### 三步添加法
+### 四步添加法（以"窗帘舵机"为例）
 
-**第一步：`gpio_ctrl.h` — 定义引脚 + 声明接口**
+**第一步：创建 `gpio_curtain.h` — 定义引脚 + 声明接口**
 
 ```c
-#define GPIO_NEW_DEVICE_PIN  10  /* 选个空闲引脚 */
-void gpio_ctrl_new_device_set(bool on);
+/* gpio_curtain.h */
+#pragma once
+#include "esp_err.h"
+#include <stdbool.h>
+
+#define GPIO_CURTAIN_PIN  11   /* 舵机信号引脚 */
+
+esp_err_t gpio_curtain_init(void);
+void gpio_curtain_set(bool open);
+bool gpio_curtain_get(void);
 ```
 
-**第二步：`gpio_ctrl.c` — 实现控制逻辑**
+**第二步：创建 `gpio_curtain.c` — 实现控制逻辑**
 
 ```c
-void gpio_ctrl_new_device_set(bool on)
+/* gpio_curtain.c */
+#include "gpio_curtain.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+static const char *TAG = "gpio_curtain";
+static bool s_state = false;
+
+esp_err_t gpio_curtain_init(void)
 {
-    gpio_set_level(GPIO_NEW_DEVICE_PIN, on ? 1 : 0);
-    ESP_LOGI(TAG, "新设备 %s", on ? "ON" : "OFF");
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << GPIO_CURTAIN_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&cfg);
+    gpio_set_level(GPIO_CURTAIN_PIN, 0);
+    ESP_LOGI(TAG, "窗帘初始化完成 (GPIO%d)", GPIO_CURTAIN_PIN);
+    return ESP_OK;
+}
+
+void gpio_curtain_set(bool open)
+{
+    s_state = open;
+    gpio_set_level(GPIO_CURTAIN_PIN, open ? 1 : 0);
+    ESP_LOGI(TAG, "窗帘 %s", open ? "打开 🪟" : "关闭 ⬛");
 }
 ```
 
-别忘了在 `gpio_ctrl_init()` 的 `pin_bit_mask` 中加上新引脚。
-
-**第三步：`cmd_handler.c` — 在 switch 中添加 case**
+**第三步：注册到系统**
 
 ```c
-case ACT_NEW_DEVICE_ON:
-    gpio_ctrl_new_device_set(true);
+/* gpio_ctrl.h — 加一行 include */
+#include "gpio_curtain.h"
+
+/* gpio_ctrl.c — init 中加一行 */
+ret = gpio_curtain_init();
+if (ret != ESP_OK) return ret;
+
+/* CMakeLists.txt — SRCS 追加 */
+idf_component_register(SRCS ... gpio_curtain.c ...)
+
+/* cmd_handler.c — switch 中添加 case */
+case ACT_CURTAIN_OPEN:
+    gpio_curtain_set(true);
+    break;
+case ACT_CURTAIN_CLOSE:
+    gpio_curtain_set(false);
     break;
 ```
 
-**编译验证：**
+**第四步：编译验证**
+
 ```bash
 idf.py build && idf.py flash monitor -p /dev/cu.usbmodem5B8E0653461
+```
+
+### 扩展流程图
+
+```
+新设备需求（如：窗帘）
+        │
+        ▼
+┌──────────────────┐
+│ 1. 新建 gpio_xxx.h │  定义引脚 + 接口声明
+│ 2. 新建 gpio_xxx.c │  实现 init + set/get
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ 3. gpio_ctrl.h    │  加 #include "gpio_xxx.h"
+│ 4. gpio_ctrl.c    │  加 gpio_xxx_init() 调用
+│ 5. CMakeLists.txt │  加 gpio_xxx.c 到 SRCS
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ 6. cmd_handler.c  │  switch 中加 case 调用
+└────────┬─────────┘
+         │
+         ▼
+    idf.py build ✅
 ```
 
 ---
