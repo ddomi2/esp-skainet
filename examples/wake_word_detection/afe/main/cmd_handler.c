@@ -402,6 +402,7 @@ static const custom_cmd_t custom_commands[] = {
     { 404, "bo fang yin yue",     "播放音乐" },
     { 405, "zan ting yin yue",    "暂停音乐" },
     { 405, "zan ting",            "暂停"     },
+    { 405, "guan bi yin yue",    "关闭音乐" },
     { 406, "xia yi shou",         "下一首"   },
     { 407, "shang yi shou",       "上一首"   },
 
@@ -488,6 +489,7 @@ static const action_entry_t action_map[] = {
     { "bo fang yin yue",        "播放音乐",   ACT_MUSIC_PLAY  },
     { "zan ting yin yue",       "暂停音乐",   ACT_MUSIC_PAUSE },
     { "zan ting",               "暂停",       ACT_MUSIC_PAUSE },
+    { "guan bi yin yue",       "关闭音乐",   ACT_MUSIC_PAUSE },
     { "xia yi shou",            "下一首",     ACT_MUSIC_NEXT  },
     { "shang yi shou",          "上一首",     ACT_MUSIC_PREV  },
 
