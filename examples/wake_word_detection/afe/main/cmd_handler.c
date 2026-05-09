@@ -621,11 +621,13 @@ void cmd_handler_execute(const char *pinyin, float confidence)
                 break;
 
             case ACT_MUSIC_PLAY:
-                printf("🎵 执行: 播放音乐\n");
+                printf("🎵 执行: 播放音乐 (蜂鸣器开)\n");
+                gpio_ctrl_buzzer_set(true);   /* ← 打开蜂鸣器 */
                 break;
 
             case ACT_MUSIC_PAUSE:
-                printf("🎵 执行: 暂停\n");
+                printf("🎵 执行: 暂停 (蜂鸣器关)\n");
+                gpio_ctrl_buzzer_set(false);  /* ← 关闭蜂鸣器 */
                 break;
 
             case ACT_MUSIC_NEXT:
@@ -637,11 +639,13 @@ void cmd_handler_execute(const char *pinyin, float confidence)
                 break;
 
             case ACT_VOL_UP:
-                printf("🔊 执行: 音量+\n");
+                printf("🔊 执行: 音量+ → %d/10\n", gpio_ctrl_buzzer_get_vol() + 1);
+                gpio_ctrl_buzzer_vol_up();    /* ← 音量增大 */
                 break;
 
             case ACT_VOL_DOWN:
-                printf("🔉 执行: 音量-\n");
+                printf("🔉 执行: 音量- → %d/10\n", gpio_ctrl_buzzer_get_vol() - 1);
+                gpio_ctrl_buzzer_vol_down();  /* ← 音量减小 */
                 break;
 
             case ACT_CURTAIN_OPEN:
