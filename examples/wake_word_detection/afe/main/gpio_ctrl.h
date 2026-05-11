@@ -20,6 +20,8 @@
 #include "gpio_led.h"
 #include "gpio_fan.h"
 #include "gpio_buzzer.h"
+#include "gpio_motor.h"
+#include "gpio_servo.h"
 
 /**
  * @brief 初始化所有 GPIO 设备（在 app_main 中调用一次）

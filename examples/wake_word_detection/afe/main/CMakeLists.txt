@@ -3,7 +3,7 @@ set(requires
     player
     )
 
-idf_component_register(SRCS main.c cmd_handler.c gpio_ctrl.c gpio_led.c gpio_fan.c gpio_buzzer.c
+idf_component_register(SRCS main.c cmd_handler.c gpio_ctrl.c gpio_led.c gpio_fan.c gpio_buzzer.c gpio_motor.c gpio_servo.c
                        INCLUDE_DIRS "."
                        REQUIRES ${requires})
 

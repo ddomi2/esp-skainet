@@ -27,6 +27,14 @@ esp_err_t gpio_ctrl_init(void)
     ret = gpio_buzzer_init();
     if (ret != ESP_OK) return ret;
 
+    /* 4. 初始化 L298N 电机驱动 */
+    ret = gpio_motor_init();
+    if (ret != ESP_OK) return ret;
+
+    /* 5. 初始化舵机 */
+    ret = gpio_servo_init();
+    if (ret != ESP_OK) return ret;
+
     ESP_LOGI(TAG, "所有 GPIO 设备初始化完成 ✅");
     return ESP_OK;
 }
