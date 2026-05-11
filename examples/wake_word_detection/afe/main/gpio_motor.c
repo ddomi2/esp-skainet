@@ -163,19 +163,35 @@ void gpio_motor_move(motor_dir_t dir)
         break;
 
     case MOTOR_LEFT:
-        /* 差速左转：左轮停，右轮正转 */
-        stop_motor(MOTOR_IN1_PIN, MOTOR_IN2_PIN);
+        /* 坦克原地左转：左轮反转，右轮正转 → 原地旋转 */
+        set_motor_direction(MOTOR_IN1_PIN, MOTOR_IN2_PIN, false);
         set_motor_direction(MOTOR_IN3_PIN, MOTOR_IN4_PIN, true);
-        update_pwm(0, s_speed);
-        ESP_LOGI(TAG, "🚗 左转");
+        update_pwm(s_speed, s_speed);
+        ESP_LOGI(TAG, "🚗 原地左转 (速度=%d%%)", s_speed);
         break;
 
     case MOTOR_RIGHT:
-        /* 差速右转：左轮正转，右轮停 */
+        /* 坦克原地右转：左轮正转，右轮反转 → 原地旋转 */
         set_motor_direction(MOTOR_IN1_PIN, MOTOR_IN2_PIN, true);
-        stop_motor(MOTOR_IN3_PIN, MOTOR_IN4_PIN);
-        update_pwm(s_speed, 0);
-        ESP_LOGI(TAG, "🚗 右转");
+        set_motor_direction(MOTOR_IN3_PIN, MOTOR_IN4_PIN, false);
+        update_pwm(s_speed, s_speed);
+        ESP_LOGI(TAG, "🚗 原地右转 (速度=%d%%)", s_speed);
+        break;
+
+    case MOTOR_SOFT_LEFT:
+        /* 缓左转：左轮半速，右轮全速 → 弧线转弯 */
+        set_motor_direction(MOTOR_IN1_PIN, MOTOR_IN2_PIN, true);
+        set_motor_direction(MOTOR_IN3_PIN, MOTOR_IN4_PIN, true);
+        update_pwm(s_speed / 3, s_speed);
+        ESP_LOGI(TAG, "🚗 缓左转");
+        break;
+
+    case MOTOR_SOFT_RIGHT:
+        /* 缓右转：左轮全速，右轮半速 → 弧线转弯 */
+        set_motor_direction(MOTOR_IN1_PIN, MOTOR_IN2_PIN, true);
+        set_motor_direction(MOTOR_IN3_PIN, MOTOR_IN4_PIN, true);
+        update_pwm(s_speed, s_speed / 3);
+        ESP_LOGI(TAG, "🚗 缓右转");
         break;
 
     case MOTOR_STOP:
@@ -196,12 +212,14 @@ void gpio_motor_set_speed(int percent)
     s_speed = percent;
 
     /* 如果正在运动中，立即更新速度 */
-    if (s_dir == MOTOR_FORWARD || s_dir == MOTOR_BACKWARD) {
+    if (s_dir == MOTOR_FORWARD || s_dir == MOTOR_BACKWARD ||
+        s_dir == MOTOR_LEFT || s_dir == MOTOR_RIGHT) {
+        /* 全速场景：两轮对称 */
         update_pwm(s_speed, s_speed);
-    } else if (s_dir == MOTOR_LEFT) {
-        update_pwm(0, s_speed);
-    } else if (s_dir == MOTOR_RIGHT) {
-        update_pwm(s_speed, 0);
+    } else if (s_dir == MOTOR_SOFT_LEFT) {
+        update_pwm(s_speed / 3, s_speed);
+    } else if (s_dir == MOTOR_SOFT_RIGHT) {
+        update_pwm(s_speed, s_speed / 3);
     }
     ESP_LOGI(TAG, "⚡ 速度设为 %d%%", s_speed);
 }

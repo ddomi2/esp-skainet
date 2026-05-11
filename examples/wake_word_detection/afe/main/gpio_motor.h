@@ -38,8 +38,10 @@ typedef enum {
     MOTOR_STOP = 0,   /* 停止 */
     MOTOR_FORWARD,    /* 前进 */
     MOTOR_BACKWARD,   /* 后退 */
-    MOTOR_LEFT,       /* 左转（左轮停/右轮转） */
-    MOTOR_RIGHT,      /* 右转（左轮转/右轮停） */
+    MOTOR_LEFT,       /* 左转（坦克模式：左轮反转/右轮正转，原地旋转） */
+    MOTOR_RIGHT,      /* 右转（坦克模式：左轮正转/右轮反转，原地旋转） */
+    MOTOR_SOFT_LEFT,  /* 缓左转（左轮慢/右轮快，弧线转弯） */
+    MOTOR_SOFT_RIGHT, /* 缓右转（左轮快/右轮慢，弧线转弯） */
 } motor_dir_t;
 
 /** 初始化 L298N 所有引脚（GPIO + PWM） */

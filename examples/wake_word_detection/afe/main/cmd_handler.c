@@ -47,9 +47,11 @@ enum action_id {
     ACT_CURTAIN_CLOSE,    /* 关窗帘 */
     ACT_CAR_FORWARD,      /* 遥控车前进 */
     ACT_CAR_BACKWARD,     /* 遥控车后退 */
-    ACT_CAR_LEFT,         /* 遥控车左转 */
-    ACT_CAR_RIGHT,        /* 遥控车右转 */
+    ACT_CAR_LEFT,         /* 遥控车原地左转 */
+    ACT_CAR_RIGHT,        /* 遥控车原地右转 */
     ACT_CAR_STOP,         /* 遥控车停止 */
+    ACT_CAR_SPEED_UP,     /* 遥控车加速 */
+    ACT_CAR_SPEED_DOWN,   /* 遥控车减速 */
 };
 
 /* ═══════════════════════════════════════════════════════════
@@ -432,6 +434,8 @@ static const custom_cmd_t custom_commands[] = {
     { 417, "you zhuan",           "右转"     },
     { 418, "ting zhi",            "停止"     },
     { 418, "ting che",            "停车"     },
+    { 419, "jia su",              "加速"     },
+    { 420, "jian su",             "减速"     },
 };
 static const int CUSTOM_CMD_COUNT = sizeof(custom_commands) / sizeof(custom_commands[0]);
 
@@ -523,6 +527,8 @@ static const action_entry_t action_map[] = {
     { "you zhuan",              "右转",       ACT_CAR_RIGHT     },
     { "ting zhi",               "停止",       ACT_CAR_STOP      },
     { "ting che",               "停车",       ACT_CAR_STOP      },
+    { "jia su",                 "加速",       ACT_CAR_SPEED_UP  },
+    { "jian su",                "减速",       ACT_CAR_SPEED_DOWN },
 };
 static const int ACTION_MAP_SIZE = sizeof(action_map) / sizeof(action_map[0]);
 
@@ -682,31 +688,36 @@ void cmd_handler_execute(const char *pinyin, float confidence)
             case ACT_CAR_FORWARD:
                 printf("🚗 执行: 前进\n");
                 gpio_motor_move(MOTOR_FORWARD);
-                gpio_servo_center();            /* 方向盘回正 */
                 break;
 
             case ACT_CAR_BACKWARD:
                 printf("🚗 执行: 后退\n");
                 gpio_motor_move(MOTOR_BACKWARD);
-                gpio_servo_center();
                 break;
 
             case ACT_CAR_LEFT:
                 printf("🚗 执行: 左转\n");
                 gpio_motor_move(MOTOR_LEFT);
-                gpio_servo_set_angle(45);       /* 舵机左打 */
                 break;
 
             case ACT_CAR_RIGHT:
                 printf("🚗 执行: 右转\n");
                 gpio_motor_move(MOTOR_RIGHT);
-                gpio_servo_set_angle(135);      /* 舵机右打 */
                 break;
 
             case ACT_CAR_STOP:
                 printf("🚗 执行: 停止\n");
                 gpio_motor_move(MOTOR_STOP);
-                gpio_servo_center();            /* 方向盘回正 */
+                break;
+
+            case ACT_CAR_SPEED_UP:
+                gpio_motor_set_speed(gpio_motor_get_speed() + 10);
+                printf("🚗 执行: 加速 → %d%%\n", gpio_motor_get_speed());
+                break;
+
+            case ACT_CAR_SPEED_DOWN:
+                gpio_motor_set_speed(gpio_motor_get_speed() - 10);
+                printf("🚗 执行: 减速 → %d%%\n", gpio_motor_get_speed());
                 break;
             }
             return;  /* 找到匹配即返回，不再继续查找 */
