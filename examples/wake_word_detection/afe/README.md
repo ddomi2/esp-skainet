@@ -1,8 +1,21 @@
 # Wake Word Detection
 
-
-
 (See the [README.md](../README.md) file in the upper level 'examples' directory for more information about examples.)
+
+## Project-specific note
+
+This directory has been customized for **ESP32-S3-DevKitC-1 + INMP441** with:
+
+- wake word: **wn9_hiesp** (`Hi ESP`)
+- command model: **mn7_en**
+- hardware actions: LED / Fan / Buzzer
+
+The current command path is **English-only at runtime**: `main/detect_Task()` always selects `mn7_en` for command recognition, and the project config now disables `mn7_cn` so it is no longer packed into the `model` partition.
+
+For the full project guide, command table, and debug-log interpretation, see:
+
+- [`README-10-英文语音识别-纯英文版.md`](./README-10-英文语音识别-纯英文版.md)
+- [`README-7-GPIO硬件控制-语音控LED灯风扇蜂鸣器.md`](./README-7-GPIO硬件控制-语音控LED灯风扇蜂鸣器.md)
 
 | Supported Targets | ESP32    | ESP32-S3 | ESP32-P4 | 
 | ----------------- | -------- | -------- | -------- |

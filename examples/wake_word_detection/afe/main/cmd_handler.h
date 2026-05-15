@@ -1,46 +1,34 @@
 /**
  * @file cmd_handler.h
- * @brief 命令词处理模块 — 注册命令词 + 动作映射 + 执行
+ * @brief English command handler — map mn7_en built-in commands to hardware
  *
- * 本模块负责：
- *   1. 注册 313 条内置命令词 + 自定义命令词 → MultiNet FST
- *   2. 将识别到的拼音文本映射到具体动作
- *   3. 调用 gpio_ctrl 等模块执行硬件操作
+ * mn7_en model loads 49 built-in commands during create().
+ * This module maps relevant command IDs to LED/Fan/Buzzer actions.
  *
- * 使用方式：
- *   在 detect_Task 中调用 cmd_handler_register() 注册命令词，
- *   识别成功后调用 cmd_handler_execute() 执行动作。
+ * Usage:
+ *   1. cmd_handler_init() after multinet->create()
+ *   2. cmd_handler_execute() when command detected
  */
 #pragma once
 
+#include <stdbool.h>
 #include "esp_mn_iface.h"
 
 /**
- * @brief 注册全部命令词（313 内置 + 自定义）
- *
- * 必须在 multinet->create() 之后调用。
- * 内部流程：alloc → add(313) → add(自定义) → update(重建FST)
- *
- * @param multinet    MultiNet 接口指针
- * @param model_data  MultiNet 模型数据
+ * @brief Initialize command handler (prints mapped commands info)
  */
-void cmd_handler_register(const esp_mn_iface_t *multinet, model_iface_data_t *model_data);
+void cmd_handler_init(void);
 
 /**
- * @brief 根据识别到的拼音执行对应动作
+ * @brief Execute hardware action based on detected command_id
  *
- * 内部跳过前导空格，然后用 strcmp 在动作表中查找。
- * 匹配成功则调用硬件控制函数（如 gpio_ctrl_led_set）。
- * 未匹配的命令词静默忽略。
- *
- * @param pinyin      MultiNet 返回的拼音字符串 (mn_result->string)
- * @param confidence  识别置信度 (mn_result->prob[0])
+ * @param command_id  mn7_en built-in command ID (1~44)
+ * @param phonemes    Phoneme string returned by model (for debug display)
+ * @param confidence  Detection confidence
  */
-void cmd_handler_execute(const char *pinyin, float confidence);
+bool cmd_handler_execute(int command_id, const char *phonemes, float confidence);
 
 /**
- * @brief 获取已绑定动作的命令词数量（用于启动时打印）
- *
- * @return 动作表中的条目数
+ * @brief Get number of mapped action entries
  */
 int cmd_handler_get_action_count(void);

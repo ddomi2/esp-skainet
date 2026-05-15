@@ -1,20 +1,17 @@
-/*
+/**
  * @file main.c
- * @brief 语音唤醒 + 命令词识别 + 硬件控制 — 主程序
+ * @brief English wake word + command recognition + hardware control
  *
- * 本文件只负责：
- *   - 初始化硬件（音频 + GPIO）
- *   - 启动 AFE 音频前端引擎
- *   - 运行 feed_Task（麦克风数据采集）和 detect_Task（唤醒+识别）
+ * Hardware: ESP32-S3-DevKitC-1 + INMP441 microphone
+ * Model:   mn7_en (English MultiNet7) + wn9_hiesp (Hi ESP wake word)
+ * GPIO:    LED=2, Fan=7, Buzzer=9
  *
- * 命令词相关逻辑已拆分到：
- *   - cmd_handler.h/c — 命令注册 + 动作映射 + 执行
- *   - gpio_ctrl.h/c   — GPIO 硬件控制（LED 等）
- *
- * This example code is in the Public Domain (or CC0 licensed, at your option.)
+ * Flow: wake word "Hi ESP" → 6s English command listening → hardware action
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_wn_iface.h"
@@ -23,11 +20,9 @@
 #include "esp_afe_sr_models.h"
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
+#include "esp_process_sdkconfig.h"
 #include "esp_board_init.h"
 #include "model_path.h"
-#include "string.h"
-
-/* 引入拆分出的模块 */
 #include "cmd_handler.h"
 #include "gpio_ctrl.h"
 
@@ -35,11 +30,54 @@ static const esp_afe_sr_iface_t *afe_handle = NULL;
 static volatile int task_flag = 0;
 static srmodel_list_t *models = NULL;
 
+/* Wake word model name (saved from afe_config before it's freed) */
+static char wn_name[64] = {0};
+static volatile int debug_listening_active = 0;
+static volatile int debug_feed_peak = 0;
+static volatile int debug_feed_avg = 0;
+
+#define COMMAND_LISTEN_TIMEOUT_MS      6000
+#define DEBUG_LISTEN_LOG_INTERVAL_MS   1000
+#define DEBUG_SPEECH_PEAK_THRESHOLD    400
+#define DEBUG_MIN_VOICED_CHUNKS        5
+
+static int sample_abs_i16(int16_t sample)
+{
+    return sample < 0 ? -(int)sample : (int)sample;
+}
+
+static const char *mn_state_to_str(esp_mn_state_t state)
+{
+    switch (state) {
+    case ESP_MN_STATE_DETECTING:
+        return "DETECTING";
+    case ESP_MN_STATE_DETECTED:
+        return "DETECTED";
+    case ESP_MN_STATE_TIMEOUT:
+        return "TIMEOUT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void print_timeout_diagnosis(int voiced_chunks, int max_chunk_peak)
+{
+    if (voiced_chunks == 0) {
+        printf("[DBG] No speech-like audio reached MultiNet after wake word\n");
+        return;
+    }
+
+    if (voiced_chunks < DEBUG_MIN_VOICED_CHUNKS ||
+        max_chunk_peak < (DEBUG_SPEECH_PEAK_THRESHOLD * 2)) {
+        printf("[DBG] Speech reached MultiNet, but it was too weak/short for a full command\n");
+        return;
+    }
+
+    printf("[DBG] Speech reached MultiNet, but no built-in English command matched\n");
+}
+
 /* ═══════════════════════════════════════════════════════════
- *  feed_Task: 从 INMP441 麦克风读取音频数据，喂入 AFE 引擎
- *
- *  这是一个死循环任务，不断从 I2S 读取 PCM 数据并送入 AFE。
- *  AFE 内部会做 VAD（语音活动检测）+ 降噪处理。
+ *  feed_Task: Read audio from INMP441 → feed to AFE engine
  * ═══════════════════════════════════════════════════════════ */
 void feed_Task(void *arg)
 {
@@ -49,194 +87,260 @@ void feed_Task(void *arg)
     int feed_channel = esp_get_feed_channel();
     assert(nch == feed_channel);
 
-    /* 分配音频缓冲区（chunk大小 × 通道数 × 每样本2字节） */
     int16_t *i2s_buff = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
     assert(i2s_buff);
 
     while (task_flag) {
-        /* 从 I2S 驱动读取一帧音频数据 */
         esp_get_feed_data(true, i2s_buff, audio_chunksize * sizeof(int16_t) * feed_channel);
-        /* 送入 AFE 引擎处理 */
+        if (debug_listening_active) {
+            int chunk_peak = 0;
+            int64_t abs_sum = 0;
+            for (int i = 0; i < audio_chunksize; i++) {
+                int abs_sample = sample_abs_i16(i2s_buff[i * feed_channel]);
+                abs_sum += abs_sample;
+                if (abs_sample > chunk_peak) {
+                    chunk_peak = abs_sample;
+                }
+            }
+            debug_feed_peak = chunk_peak;
+            debug_feed_avg = (int)(abs_sum / audio_chunksize);
+        }
         afe_handle->feed(afe_data, i2s_buff);
     }
 
-    if (i2s_buff) {
-        free(i2s_buff);
-        i2s_buff = NULL;
-    }
+    free(i2s_buff);
     vTaskDelete(NULL);
 }
 
 /* ═══════════════════════════════════════════════════════════
- *  detect_Task: 唤醒词检测 + MultiNet 命令词识别
+ *  detect_Task: Wake word detection + English command recognition
  *
- *  状态机：
- *    等待唤醒 → 唤醒成功 → 聆听命令词 → 识别成功/超时 → 回到等待
- *
- *  识别成功后调用 cmd_handler_execute() 执行硬件操作。
+ *  State machine:
+ *    IDLE → wake word detected → LISTENING (6s) → command/timeout → IDLE
  * ═══════════════════════════════════════════════════════════ */
 void detect_Task(void *arg)
 {
     esp_afe_sr_data_t *afe_data = arg;
     int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
+    int chunk_ms = (afe_chunksize * 1000) / 16000;
 
-    /* ────── 初始化 MultiNet 命令词识别模型 ────── */
-    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
+    /* ── Initialize English MultiNet model ── */
+    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
     if (mn_name == NULL) {
-        printf("错误: 未找到 MultiNet 命令词模型!\n");
-        printf("请确认 sdkconfig 中已启用 CONFIG_SR_MN_CN_MULTINET7_QUANT=y\n");
-        printf("然后重新执行: idf.py set-target esp32s3 && idf.py build\n");
-        printf("当前仅运行唤醒词检测模式...\n");
-        while (task_flag) {
-            afe_fetch_result_t* res = afe_handle->fetch(afe_data);
-            if (!res || res->ret_value == ESP_FAIL) break;
-            if (res->wakeup_state == WAKENET_DETECTED) {
-                printf("唤醒词已检测到! (无命令词模型，无法继续识别)\n");
-            }
-        }
+        printf("ERROR: mn7_en model not found!\n");
+        printf("Please enable CONFIG_SR_MN_EN_MULTINET7_QUANT=y in menuconfig\n");
         vTaskDelete(NULL);
         return;
     }
-    printf("multinet 模型: %s\n", mn_name);
+    printf("MultiNet model: %s\n", mn_name);
+    printf("Command path: mn7_en built-in commands only\n");
 
-    /* 创建 MultiNet 模型实例（超时 6000ms） */
     esp_mn_iface_t *multinet = esp_mn_handle_from_name(mn_name);
-    model_iface_data_t *model_data = multinet->create(mn_name, 6000);
+    model_iface_data_t *model_data = multinet->create(mn_name, COMMAND_LISTEN_TIMEOUT_MS);
 
-    /*
-     * 注册全部命令词：313 内置 + 自定义追加
-     * 调用 cmd_handler 模块完成，详见 cmd_handler.c
-     */
-    cmd_handler_register(multinet, model_data);
+    /* Official example path: rebuild speech command set from sdkconfig. */
+    esp_mn_commands_update_from_sdkconfig(multinet, model_data);
+
+    /* mn7_en: use built-in commands (do NOT call set_speech_commands) */
+    cmd_handler_init();
 
     int mu_chunksize = multinet->get_samp_chunksize(model_data);
     assert(mu_chunksize == afe_chunksize);
 
-    /* 打印所有活跃命令词（调试用） */
+    /* Print built-in commands for debugging */
     multinet->print_active_speech_commands(model_data);
+
     printf("============ detect start ============\n");
-    printf("说出唤醒词 \"嗨，乐鑫\" 以激活命令词识别...\n");
-    printf("已绑定动作的命令词: %d 条 (其余命令词会被忽略)\n",
-           cmd_handler_get_action_count());
+    printf("Say \"Hi ESP\" to activate command recognition...\n");
+    printf("Mapped actions: %d\n", cmd_handler_get_action_count());
 
     int wakeup_flag = 0;
+    int listen_elapsed_ms = 0;
+    int listen_frames = 0;
+    int voiced_chunks = 0;
+    int max_chunk_peak = 0;
+    int next_listen_log_ms = DEBUG_LISTEN_LOG_INTERVAL_MS;
 
     while (task_flag) {
-        afe_fetch_result_t* res = afe_handle->fetch(afe_data);
+        afe_fetch_result_t *res = afe_handle->fetch(afe_data);
         if (!res || res->ret_value == ESP_FAIL) {
             printf("fetch error!\n");
             break;
         }
 
-        /* ────── 唤醒词检测 ────── */
+        /* ── Wake word detection ── */
         if (res->wakeup_state == WAKENET_DETECTED) {
             printf("══════════════════════════════════\n");
-            printf("  唤醒词已检测到!\n");
-            printf("  model index:%d, word index:%d\n",
-                   res->wakenet_model_index, res->wake_word_index);
+            printf("  🎤 Wake word detected!\n");
+            printf("  Model: %s (idx:%d, word:%d)\n",
+                   wn_name, res->wakenet_model_index, res->wake_word_index);
             printf("══════════════════════════════════\n");
-            multinet->clean(model_data);  /* 清除之前的识别状态 */
+            multinet->clean(model_data);
         }
 
-        /* 根据通道数进入命令词识别状态 */
         if (res->raw_data_channels == 1 && res->wakeup_state == WAKENET_DETECTED) {
             wakeup_flag = 1;
-            printf("-----------正在聆听命令词...-----------\n");
+            debug_listening_active = 1;
+            listen_elapsed_ms = 0;
+            listen_frames = 0;
+            voiced_chunks = 0;
+            max_chunk_peak = 0;
+            next_listen_log_ms = DEBUG_LISTEN_LOG_INTERVAL_MS;
+            printf("-----------Listening for commands...-----------\n");
+            printf("[DBG] MultiNet chunk=%d samples (~%d ms), peak threshold=%d\n",
+                   afe_chunksize, chunk_ms, DEBUG_SPEECH_PEAK_THRESHOLD);
         } else if (res->raw_data_channels > 1 && res->wakeup_state == WAKENET_CHANNEL_VERIFIED) {
-            printf("通道验证通过, channel: %d\n", res->trigger_channel_id);
             wakeup_flag = 1;
-            printf("-----------正在聆听命令词...-----------\n");
+            debug_listening_active = 1;
+            listen_elapsed_ms = 0;
+            listen_frames = 0;
+            voiced_chunks = 0;
+            max_chunk_peak = 0;
+            next_listen_log_ms = DEBUG_LISTEN_LOG_INTERVAL_MS;
+            printf("-----------Channel verified, listening...-----------\n");
+            printf("[DBG] MultiNet chunk=%d samples (~%d ms), peak threshold=%d\n",
+                   afe_chunksize, chunk_ms, DEBUG_SPEECH_PEAK_THRESHOLD);
         }
 
-        /* ────── 命令词识别阶段 ────── */
+        /* ── Command recognition ── */
         if (wakeup_flag == 1) {
+            int chunk_peak = 0;
+            int chunk_avg = 0;
+            if (res->data != NULL) {
+                int64_t abs_sum = 0;
+                for (int i = 0; i < afe_chunksize; i++) {
+                    int abs_sample = sample_abs_i16(res->data[i]);
+                    abs_sum += abs_sample;
+                    if (abs_sample > chunk_peak) {
+                        chunk_peak = abs_sample;
+                    }
+                }
+                chunk_avg = (int)(abs_sum / afe_chunksize);
+            }
+
+            listen_frames++;
+            listen_elapsed_ms += chunk_ms;
+            if (chunk_peak >= DEBUG_SPEECH_PEAK_THRESHOLD) {
+                voiced_chunks++;
+            }
+            if (chunk_peak > max_chunk_peak) {
+                max_chunk_peak = chunk_peak;
+            }
+            if (listen_elapsed_ms >= next_listen_log_ms) {
+                printf("[DBG] listening=%d ms, frames=%d, feed_peak=%d, feed_avg=%d, afe_peak=%d, afe_avg=%d, voiced=%d\n",
+                       listen_elapsed_ms,
+                       listen_frames,
+                       debug_feed_peak,
+                       debug_feed_avg,
+                       chunk_peak,
+                       chunk_avg,
+                       voiced_chunks);
+                next_listen_log_ms += DEBUG_LISTEN_LOG_INTERVAL_MS;
+            }
+
             esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
 
             if (mn_state == ESP_MN_STATE_DETECTING) {
-                continue;  /* 还在识别中，等待下一帧 */
+                continue;
             }
 
+            printf("[DBG] MultiNet state=%s after %d ms (frames=%d, peak=%d, voiced=%d)\n",
+                   mn_state_to_str(mn_state),
+                   listen_elapsed_ms,
+                   listen_frames,
+                   max_chunk_peak,
+                   voiced_chunks);
+
             if (mn_state == ESP_MN_STATE_DETECTED) {
-                /* 识别成功：获取结果并执行动作 */
                 esp_mn_results_t *mn_result = multinet->get_results(model_data);
-                printf("┌─── 命令词识别 ───┐\n");
-                printf("│ 词=%s, 置信度=%.2f\n",
-                       mn_result->string, mn_result->prob[0]);
-                printf("└──────────────────┘\n");
+                if (!mn_result || mn_result->num <= 0) {
+                    printf("⚠️  DETECTED but no command candidates returned\n");
+                    continue;
+                }
 
-                /* 通过拼音文本匹配动作表，执行硬件操作 */
-                cmd_handler_execute(mn_result->string, mn_result->prob[0]);
+                printf("┌─── Command candidates ───┐\n");
+                bool handled = false;
+                for (int i = 0; i < mn_result->num; i++) {
+                    printf("│ TOP %d: id=%d, phrase=%d, conf=%.2f, text=%s\n",
+                           i + 1,
+                           mn_result->command_id[i],
+                           mn_result->phrase_id[i],
+                           mn_result->prob[i],
+                           mn_result->string);
 
-                printf("-----------继续聆听...-----------\n");
+                    if (!handled) {
+                        handled = cmd_handler_execute(
+                            mn_result->command_id[i],
+                            mn_result->string,
+                            mn_result->prob[i]);
+                    }
+                }
+                printf("└──────────────────────────┘\n");
+
+                if (handled) {
+                    multinet->clean(model_data);
+                    wakeup_flag = 0;
+                    debug_listening_active = 0;
+                    printf("-----------Command handled, waiting for wake word...-----------\n");
+                } else {
+                    printf("-----------No mapped command, keep listening...-----------\n");
+                }
             }
 
             if (mn_state == ESP_MN_STATE_TIMEOUT) {
-                /* 超时：6秒内未说出命令词，回到唤醒等待状态 */
                 esp_mn_results_t *mn_result = multinet->get_results(model_data);
-                printf("识别超时 (6 秒), 输入: %s\n", mn_result->string);
-                afe_handle->enable_wakenet(afe_data);
+                printf("Timeout (%ds), input: %s\n",
+                       COMMAND_LISTEN_TIMEOUT_MS / 1000,
+                       (mn_result && mn_result->string[0] != '\0') ? mn_result->string : "<none>");
+                print_timeout_diagnosis(voiced_chunks, max_chunk_peak);
+                multinet->clean(model_data);
                 wakeup_flag = 0;
-                printf("-----------等待唤醒词...-----------\n");
-                continue;
+                debug_listening_active = 0;
+                printf("-----------Waiting for wake word...-----------\n");
             }
         }
     }
 
     if (model_data) {
         multinet->destroy(model_data);
-        model_data = NULL;
     }
-    printf("detect task exit\n");
     vTaskDelete(NULL);
 }
 
 /* ═══════════════════════════════════════════════════════════
- *  app_main: 程序入口 — 初始化硬件、模型、AFE，启动任务
- *
- *  执行顺序：
- *    1. 初始化音频硬件（I2S + INMP441）
- *    2. 初始化 GPIO（LED 引脚）
- *    3. 加载语音模型（唤醒词 + 命令词）
- *    4. 配置 AFE 音频前端
- *    5. 启动 feed_Task 和 detect_Task
+ *  app_main: Initialize hardware → models → AFE → start tasks
  * ═══════════════════════════════════════════════════════════ */
-void app_main()
+void app_main(void)
 {
-    /* ── 1. 初始化音频硬件（16kHz 采样率，1通道，16bit） ── */
+    /* 1. Audio hardware (16kHz, 1ch mono, 16bit) */
     ESP_ERROR_CHECK(esp_board_init(16000, 1, 16));
 
-    /* ── 2. 初始化 GPIO 设备控制（LED 等） ── */
+    /* 2. GPIO devices */
     ESP_ERROR_CHECK(gpio_ctrl_init());
 
-    /* ── 3. 加载语音模型 ── */
+    /* 3. Load speech models */
     models = esp_srmodel_init("model");
     if (models) {
         for (int i = 0; i < models->num; i++) {
-            if (strstr(models->model_name[i], ESP_WN_PREFIX) != NULL)
-                printf("唤醒词模型: %s\n", models->model_name[i]);
-            if (strstr(models->model_name[i], ESP_MN_PREFIX) != NULL)
-                printf("命令词模型: %s\n", models->model_name[i]);
+            printf("Model: %s\n", models->model_name[i]);
         }
     }
 
-    /* ── 4. 配置 AFE 音频前端引擎 ── */
+    /* 4. Configure AFE */
     afe_config_t *afe_config = afe_config_init(
         esp_get_input_format(), models, AFE_TYPE_SR, AFE_MODE_LOW_COST);
 
-    if (afe_config->wakenet_model_name)
-        printf("AFE 唤醒词模型: %s\n", afe_config->wakenet_model_name);
-    if (afe_config->wakenet_model_name_2)
-        printf("AFE 唤醒词模型2: %s\n", afe_config->wakenet_model_name_2);
+    if (afe_config->wakenet_model_name) {
+        strncpy(wn_name, afe_config->wakenet_model_name, sizeof(wn_name) - 1);
+        printf("Wake word model: %s\n", wn_name);
+    }
 
     afe_handle = esp_afe_handle_from_config(afe_config);
     esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(afe_config);
     afe_config_free(afe_config);
 
-    /* ── 5. 启动音频处理任务 ── */
+    /* 5. Start tasks */
     task_flag = 1;
-    /* feed_Task 固定在 CPU0：持续读取麦克风数据 */
-    xTaskCreatePinnedToCore(&feed_Task, "feed", 8 * 1024, (void*)afe_data, 5, NULL, 0);
-    /* detect_Task 固定在 CPU1：唤醒词检测 + 命令词识别 */
-    xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void*)afe_data, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&feed_Task,   "feed",   8 * 1024, afe_data, 5, NULL, 0);
+    xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, afe_data, 5, NULL, 1);
 }
-
