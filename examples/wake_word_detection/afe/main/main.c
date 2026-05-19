@@ -30,10 +30,17 @@
 /* 引入拆分出的模块 */
 #include "cmd_handler.h"
 #include "gpio_ctrl.h"
+#include "wifi_portal.h"
 
 static const esp_afe_sr_iface_t *afe_handle = NULL;
 static volatile int task_flag = 0;
 static srmodel_list_t *models = NULL;
+
+typedef struct {
+    esp_afe_sr_data_t *afe_data;
+    esp_mn_iface_t *multinet;
+    model_iface_data_t *model_data;
+} detect_task_ctx_t;
 
 /* ═══════════════════════════════════════════════════════════
  *  feed_Task: 从 INMP441 麦克风读取音频数据，喂入 AFE 引擎
@@ -77,12 +84,11 @@ void feed_Task(void *arg)
  * ═══════════════════════════════════════════════════════════ */
 void detect_Task(void *arg)
 {
-    esp_afe_sr_data_t *afe_data = arg;
+    detect_task_ctx_t *ctx = (detect_task_ctx_t *)arg;
+    esp_afe_sr_data_t *afe_data = ctx->afe_data;
     int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
 
-    /* ────── 初始化 MultiNet 命令词识别模型 ────── */
-    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
-    if (mn_name == NULL) {
+    if (ctx->multinet == NULL || ctx->model_data == NULL) {
         printf("错误: 未找到 MultiNet 命令词模型!\n");
         printf("请确认 sdkconfig 中已启用 CONFIG_SR_MN_CN_MULTINET7_QUANT=y\n");
         printf("然后重新执行: idf.py set-target esp32s3 && idf.py build\n");
@@ -97,27 +103,11 @@ void detect_Task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    printf("multinet 模型: %s\n", mn_name);
 
-    /* 创建 MultiNet 模型实例（超时 6000ms） */
-    esp_mn_iface_t *multinet = esp_mn_handle_from_name(mn_name);
-    model_iface_data_t *model_data = multinet->create(mn_name, 6000);
-
-    /*
-     * 注册全部命令词：313 内置 + 自定义追加
-     * 调用 cmd_handler 模块完成，详见 cmd_handler.c
-     */
-    cmd_handler_register(multinet, model_data);
-
+    esp_mn_iface_t *multinet = ctx->multinet;
+    model_iface_data_t *model_data = ctx->model_data;
     int mu_chunksize = multinet->get_samp_chunksize(model_data);
     assert(mu_chunksize == afe_chunksize);
-
-    /* 打印所有活跃命令词（调试用） */
-    multinet->print_active_speech_commands(model_data);
-    printf("============ detect start ============\n");
-    printf("说出唤醒词 \"嗨，乐鑫\" 以激活命令词识别...\n");
-    printf("已绑定动作的命令词: %d 条 (其余命令词会被忽略)\n",
-           cmd_handler_get_action_count());
 
     int wakeup_flag = 0;
 
@@ -184,7 +174,7 @@ void detect_Task(void *arg)
 
     if (model_data) {
         multinet->destroy(model_data);
-        model_data = NULL;
+        ctx->model_data = NULL;
     }
     printf("detect task exit\n");
     vTaskDelete(NULL);
@@ -196,9 +186,10 @@ void detect_Task(void *arg)
  *  执行顺序：
  *    1. 初始化音频硬件（I2S + INMP441）
  *    2. 初始化 GPIO（LED 引脚）
- *    3. 加载语音模型（唤醒词 + 命令词）
- *    4. 配置 AFE 音频前端
- *    5. 启动 feed_Task 和 detect_Task
+ *    3. 初始化 Wi-Fi（常驻 SoftAP 配网页 + STA 联网）
+ *    4. 加载语音模型（唤醒词 + 命令词）
+ *    5. 配置 AFE 音频前端
+ *    6. 启动 feed_Task 和 detect_Task
  * ═══════════════════════════════════════════════════════════ */
 void app_main()
 {
@@ -208,7 +199,14 @@ void app_main()
     /* ── 2. 初始化 GPIO 设备控制（LED 等） ── */
     ESP_ERROR_CHECK(gpio_ctrl_init());
 
-    /* ── 3. 加载语音模型 ── */
+    /* ── 3. 初始化 Wi-Fi：固定 AP + 网页配置 + STA 自动联网 ── */
+    esp_err_t wifi_err = wifi_portal_init();
+    if (wifi_err != ESP_OK) {
+        printf("Wi-Fi 初始化失败，不影响当前离线语音功能: %s\n",
+               esp_err_to_name(wifi_err));
+    }
+
+    /* ── 4. 加载语音模型 ── */
     models = esp_srmodel_init("model");
     if (models) {
         for (int i = 0; i < models->num; i++) {
@@ -219,7 +217,7 @@ void app_main()
         }
     }
 
-    /* ── 4. 配置 AFE 音频前端引擎 ── */
+    /* ── 5. 配置 AFE 音频前端引擎 ── */
     afe_config_t *afe_config = afe_config_init(
         esp_get_input_format(), models, AFE_TYPE_SR, AFE_MODE_LOW_COST);
 
@@ -232,11 +230,28 @@ void app_main()
     esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(afe_config);
     afe_config_free(afe_config);
 
-    /* ── 5. 启动音频处理任务 ── */
+    detect_task_ctx_t *detect_ctx = calloc(1, sizeof(detect_task_ctx_t));
+    assert(detect_ctx);
+    detect_ctx->afe_data = afe_data;
+
+    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
+    if (mn_name != NULL) {
+        printf("multinet 模型: %s\n", mn_name);
+        detect_ctx->multinet = esp_mn_handle_from_name(mn_name);
+        detect_ctx->model_data = detect_ctx->multinet->create(mn_name, 6000);
+        cmd_handler_register(detect_ctx->multinet, detect_ctx->model_data);
+        detect_ctx->multinet->print_active_speech_commands(detect_ctx->model_data);
+    }
+
+    printf("============ detect start ============\n");
+    printf("说出唤醒词 \"嗨，乐鑫\" 以激活命令词识别...\n");
+    printf("已绑定动作的命令词: %d 条 (其余命令词会被忽略)\n",
+           cmd_handler_get_action_count());
+
+    /* ── 6. 启动音频处理任务 ── */
     task_flag = 1;
+    /* detect_Task 固定在 CPU1：唤醒词检测 + 命令词识别 */
+    xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void*)detect_ctx, 5, NULL, 1);
     /* feed_Task 固定在 CPU0：持续读取麦克风数据 */
     xTaskCreatePinnedToCore(&feed_Task, "feed", 8 * 1024, (void*)afe_data, 5, NULL, 0);
-    /* detect_Task 固定在 CPU1：唤醒词检测 + 命令词识别 */
-    xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void*)afe_data, 5, NULL, 1);
 }
-

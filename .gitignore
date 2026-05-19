@@ -9,3 +9,15 @@ test/*/5.0
 test/*/4.4
 __pycache__
 pytest_log
+
+.idea/
+*.iml
+*.iws
+*.ipr
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.DS_Store
+*.egg-info/

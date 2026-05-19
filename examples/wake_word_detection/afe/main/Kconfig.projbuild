@@ -1,0 +1,33 @@
+menu "Wake Word Detection Demo"
+
+    menu "Wi-Fi Portal Configuration"
+
+        config WIFI_PORTAL_USE_DEFAULT_STA
+            bool "Use built-in default STA credentials"
+            default n
+            help
+                When enabled, the firmware will try these built-in Wi-Fi
+                credentials on first boot or whenever no saved Wi-Fi
+                configuration exists in NVS. If the user later changes the
+                Wi-Fi from the web page, the saved configuration takes
+                priority over these defaults.
+
+        config WIFI_PORTAL_DEFAULT_STA_SSID
+            string "Default STA SSID"
+            default ""
+            depends on WIFI_PORTAL_USE_DEFAULT_STA
+            help
+                Demo Wi-Fi SSID used only when there is no saved Wi-Fi
+                configuration yet.
+
+        config WIFI_PORTAL_DEFAULT_STA_PASSWORD
+            string "Default STA password"
+            default ""
+            depends on WIFI_PORTAL_USE_DEFAULT_STA
+            help
+                Demo Wi-Fi password used only when there is no saved Wi-Fi
+                configuration yet.
+
+    endmenu
+
+endmenu
